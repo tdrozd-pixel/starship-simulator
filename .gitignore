@@ -14,10 +14,9 @@ CMakeUserPresets.json
 *.csv
 *.tracy
 
-# Godot
-godot_project/.godot/
-godot_project/.import/
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code personal settings
+.claude/settings.local.json

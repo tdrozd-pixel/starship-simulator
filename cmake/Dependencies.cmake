@@ -39,3 +39,33 @@ if(SIM_ENABLE_TRACY)
         GIT_PROGRESS TRUE)
     FetchContent_MakeAvailable(tracy)
 endif()
+
+# ---------------------------------------------------------------------------
+# civetweb (embedded HTTP + WebSocket server, MIT), used by sim_server.
+# Its own CMakeLists is skipped: compile the single C source directly.
+# ---------------------------------------------------------------------------
+if(SIM_BUILD_SERVER)
+    enable_language(C)
+    FetchContent_Declare(civetweb
+        URL https://github.com/civetweb/civetweb/archive/refs/tags/v1.16.tar.gz
+        URL_HASH SHA256=f0e471c1bf4e7804a6cfb41ea9d13e7d623b2bcc7bc1e2a4dd54951a24d60285
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(civetweb)
+    if(NOT civetweb_POPULATED)
+        FetchContent_Populate(civetweb)
+    endif()
+    add_library(civetweb STATIC ${civetweb_SOURCE_DIR}/src/civetweb.c)
+    target_include_directories(civetweb SYSTEM PUBLIC ${civetweb_SOURCE_DIR}/include)
+    target_compile_definitions(civetweb PRIVATE NO_SSL NO_CGI USE_WEBSOCKET)
+    target_compile_definitions(civetweb PUBLIC NO_SSL USE_WEBSOCKET)
+    if(MSVC)
+        target_compile_options(civetweb PRIVATE /W0)  # third-party code, not ours to fix
+    else()
+        target_compile_options(civetweb PRIVATE -w)
+        find_package(Threads REQUIRED)
+        target_link_libraries(civetweb PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+    endif()
+    if(WIN32)
+        target_link_libraries(civetweb PUBLIC ws2_32 iphlpapi)
+    endif()
+endif()

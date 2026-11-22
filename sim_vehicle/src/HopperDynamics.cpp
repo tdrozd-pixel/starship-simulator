@@ -62,6 +62,8 @@ HopperDynamics::HopperDynamics(const HopperParams& params, const HopperState& in
 
 void HopperDynamics::initialize(Bus& bus) {
     commandChannel_ = &bus.channel<ActuatorCommandMsg>(channels::kActuatorCmd);
+    weatherChannel_ = &bus.channel<env::WeatherSample>("weather");
+    weatherConditionsChannel_ = &bus.channel<env::WeatherConditions>("weather_conditions");
 }
 
 Eigen::Matrix3d HopperDynamics::inertia(double mass) const {
@@ -92,8 +94,9 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
     // Drag (placeholder): opposes velocity, constant Cd on the cross-section
     const env::AtmosphereSample air = atmosphere_.at(std::max(0.0, x.position.z()));
     const double area = std::numbers::pi * params_.radius * params_.radius;
-    const double speed = x.velocity.norm();
-    const Eigen::Vector3d drag = -0.5 * air.density * params_.dragCoefficient * area * speed * x.velocity;
+    const Eigen::Vector3d airVelocity = x.velocity - weather_.wind;
+    const double speed = airVelocity.norm();
+    const Eigen::Vector3d drag = -0.5 * air.density * params_.dragCoefficient * area * speed * airVelocity;
 
     Eigen::Vector3d forceWorld = R * thrustBody + mass * gravity_.acceleration(x.position) + drag;
 
@@ -132,6 +135,13 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
 
 void HopperDynamics::prepare(double t) {
     SIM_ZONE("HopperDynamics::prepare");
+    const Eigen::Vector3d ambientWind =
+        (weatherChannel_ != nullptr && weatherChannel_->latest().valid())
+            ? weatherChannel_->latest().data.wind
+            : Eigen::Vector3d::Zero();
+    weatherConditionsChannel_->publish(
+        env::WeatherConditions{std::max(0.0, x_.position.z()), (x_.velocity - ambientWind).norm()}, t);
+
     if (commandChannel_ != nullptr && commandChannel_->latest().valid()) {
         command_ = commandChannel_->latest().data;
     }
@@ -159,6 +169,10 @@ Eigen::Vector3d HopperDynamics::specificForceBody() const {
 
 void HopperDynamics::integrate(double t, double dt) {
     SIM_ZONE("HopperDynamics::integrate");
+    if (weatherChannel_ != nullptr && weatherChannel_->latest().valid()) {
+        weather_ = weatherChannel_->latest().data;
+    }
+
     // Pick up any command the flight software published this step.
     if (commandChannel_ != nullptr && commandChannel_->latest().valid()) {
         command_ = commandChannel_->latest().data;

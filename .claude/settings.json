@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake *)",
+      "Bash(\"C:/Program Files/CMake/bin/cmake.exe\" *)",
+      "Bash(ctest *)",
+      "Bash(build/tests/Release/sim_tests.exe*)",
+      "Bash(./build/tests/Release/sim_tests.exe*)",
+      "Bash(build/sim_cli/Release/sim_cli.exe*)",
+      "Bash(./build/sim_cli/Release/sim_cli.exe*)",
+      "Bash(python -I web/tests/run_web_tests.py*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)"
+    ],
+    "deny": [
+      "Edit(web/vendor/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_em_dash.py\"",
+            "timeout": 15,
+            "statusMessage": "Checking for em dashes"
+          }
+        ]
+      }
+    ]
+  }
+}

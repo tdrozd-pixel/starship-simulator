@@ -2,11 +2,15 @@
 
 Engineering-grade simulation of SpaceX Starship (V3): launch, hot staging, Booster boostback and tower catch, Ship entry and landing. Every system, gauge and sensor is simulated, and the vehicles are flown by real flight software (written in this repo) that only sees simulated sensors. The goal is extreme realism; schedule is not a constraint. It is also a portfolio project, so code quality, tests and documented assumptions matter.
 
+Scope: a **mission control simulation**, not a game. A simulation server streams live data to clients on the local network, and anywhere from one person to a group (for example friends with laptops) can take console positions (propulsion, GNC, power, flight director, and so on) and work the flight together in real time. Crew size is configurable: positions without a person are consolidated into someone else's seat (and later, optionally, run by automated virtual controllers). Every client is a web page in a browser, including all 3D views, the way modern operations teams (SpaceX included) run most of their tooling, so joining takes a URL and nothing to install. Realism wins over fun wherever they conflict: no scores, no shortcuts, no truth on the consoles.
+
 Owner: Taras Drozd. Primary languages he knows best are Python and Java; this project is C++20.
 
 ## Current status
 
-The framework skeleton is in place and flies a single-engine **test hopper** (placeholder vehicle, not Starship) through a 50 m vertical hop with modeled IMU and radar altimeter noise. That proves the sim executive, rate-group scheduler, bus, RK4 integrator, pacing, logging and the flight software seam. Next work follows the build order below.
+The framework skeleton is in place and flies a single-engine **test hopper** (placeholder vehicle, not Starship) through a 50 m vertical hop with modeled IMU and radar altimeter noise. That proves the sim executive, rate-group scheduler, bus, RK4 integrator, pacing, logging and the flight software seam.
+
+`sim_server` runs the hop in real time and serves a browser outside view (three.js, Ship-sized placeholder cylinder) over the LAN via the truth stream (`docs/protocol/truth_stream.md`). There are no consoles, sessions, roles or telemetry downlink yet. Next work follows the build order below.
 
 ## Build and run
 
@@ -20,9 +24,18 @@ build/sim_cli/sim_cli                  # real-time hop
 build/sim_cli/sim_cli --fast --log hop.csv
 build/sim_cli/sim_cli --ideal-sensors  # "truth mode" for control tuning
 build/sim_cli/sim_cli --time-scale 0.25 --seed 42
+
+build/sim_server/sim_server --host 127.0.0.1   # then open http://127.0.0.1:8080/
+build/sim_server/sim_server                    # LAN: binds 0.0.0.0:8080, prints a URL per address
+build/sim_server/sim_server --time-scale 0.25 --seed 42 --ideal-sensors --autostart
+
+python -I web/tests/run_web_tests.py           # web client unit tests (Playwright, headless Edge/Chromium)
+python -I tools/e2e/server_smoke.py            # end-to-end: protocol, restart, stalled client, shutdown
 ```
 
-On Windows with the Visual Studio generator, binaries land in `build/sim_cli/Release/` and `build/tests/Release/`.
+On Windows with the Visual Studio generator, binaries land in `build/<target>/Release/` (for example `build/sim_server/Release/sim_server.exe`).
+
+`sim_server` holds each run on the pad until a browser connects (`--autostart` skips that). The first configure downloads civetweb v1.16 (HTTP + WebSocket); `-DSIM_BUILD_SERVER=OFF` skips the server. On first LAN run Windows asks about the firewall: allow Private networks only. Use `--host 127.0.0.1` in tests and agents to avoid the prompt.
 
 Profiling: configure with `-DSIM_ENABLE_TRACY=ON`, run the Tracy GUI (v0.11.1 to match the client), and connect while the sim runs. Every scheduled model shows up as its own zone.
 
@@ -45,14 +58,26 @@ sim_vehicle/   Vehicle models, sensors and the flight software bridge
   Sensors                 ImuModel, RadarAltimeterModel
   FlightSoftwareModel     SimHal (fsw::Hal over the bus) + runs flight software in lockstep
   TelemetryLogger         truth vs flight software beliefs to CSV
+  TruthSnapshotPublisher  100 Hz truth snapshots into a TruthSnapshotSink (no networking)
   HopScenario             builds the hop scenario
 sim_cli/       Headless runner (real time, fast, slow motion)
+sim_server/    Real-time sim process on the LAN (the only code that does networking)
+  SimRunner               sim thread: build, run paced, hold, restart; wait for a client
+  SnapshotRing            lock-free SPSC ring, sim thread -> broadcaster
+  TruthServer             civetweb: static files from web/, /ws/truth, per-client send queues
+  WireFormat, JsonMessages  truth stream encoding (docs/protocol/truth_stream.md)
+  Planned: telemetry downlink, commands, sessions and roles, command log
+web/           Browser clients, plain ES modules, no build step
+  js/frames.js            the only sim-frame to renderer-frame conversion
+  js/protocol.js, interpolator.js, truthClient.js   pure, testable without a DOM
+  vendor/three/           three.js 0.180.0, vendored unmodified (never edit)
+  Planned: session lobby, Open MCT consoles with per-position camera views, supervisor station
+docs/protocol/ Versioned wire protocols (truth_stream.md)
+tools/e2e/     End-to-end tests that run the real server (server_smoke.py)
 tests/         Minimal in-house test harness (swap for Catch2/GoogleTest when needed)
-godot_bridge/  (planned) GDExtension wrapper around sim_core/sim_vehicle
-godot_project/ (planned) Godot 4 scenes, Blender models, shaders, HUD
 ```
 
-Layering rule: `flight_sw` <- nothing; `sim_core` <- nothing; `sim_vehicle` <- `sim_core`, `flight_sw`; apps <- `sim_vehicle`. Never include upward. The sim must never depend on Godot.
+Layering rule: `flight_sw` <- nothing; `sim_core` <- nothing; `sim_vehicle` <- `sim_core`, `flight_sw`; apps (`sim_cli`, `sim_server`) <- `sim_vehicle`. Never include upward. Only `sim_server` may use networking (civetweb). The sim must never depend on any client. Clients run in separate processes, usually on other machines, and talk to `sim_server` only over the network through documented protocols; they never link the sim.
 
 ## Architecture
 
@@ -85,13 +110,14 @@ Every model rate must divide the base rate exactly (the scheduler throws otherwi
 | Radar altimeter | 50 Hz (current) |
 | GNSS | 5 to 10 Hz |
 | Flight software | 100 Hz (current) |
-| Snapshot to renderer | 60 to 120 Hz |
+| Snapshot to renderer | 100 Hz (current; browser interpolates to display rate) |
 | Logging | 100 Hz (current) |
 
 ### Rules
 
 - **No allocation in the step loop.** Allocate in constructors or `initialize()`. Use fixed-size Eigen types.
 - **Resolve bus channels in `initialize()`** and keep the reference. `Bus::channel()` does a hash map lookup.
+- **The sim thread never blocks on networking.** Truth leaves the sim through `TruthSnapshotPublisher` into the SPSC `SnapshotRing`; a broadcaster thread fans out to per-client bounded queues, each drained by its own sender thread. A slow client only loses its own snapshots.
 - **Flight software never reads truth.** It only uses `fsw::Hal`. `SimHal` is the seam where a real flight computer plugs in later for hardware-in-the-loop.
 - **Determinism.** Same seed gives a bit-identical flight. Use `sim::Rng` (own normal/uniform on top of `std::mt19937_64`), never `std::normal_distribution` or `std::uniform_real_distribution`, which differ between MSVC and GCC. Give each model its own stream via `deriveSeed(masterSeed, "model_name")`.
 - **Heavy physics is precomputed offline** into tables: aero coefficients (CFD with OpenFOAM or SU2), combustion properties (NASA CEA), upper atmosphere (NRLMSISE-00).
@@ -104,7 +130,7 @@ Every model rate must divide the base rate exactly (the scheduler throws otherwi
 
 - SI units everywhere. Angles in radians internally. Put units in comments: `// [m/s]`.
 - Current placeholder: flat local ENU world frame (z up), uniform gravity. Body frame +z along the vehicle axis toward the nose; `attitude` rotates body to world.
-- Planned: WGS-84, ECI/ECEF, site ENU frames (phase 0, item 2). Godot is Y-up with -Z forward; do the conversion in exactly one function in the bridge.
+- Planned: WGS-84, ECI/ECEF, site ENU frames (phase 0, item 2). The web renderer has its own convention (three.js is Y-up; Cesium uses ECEF); do the conversion from sim frames in exactly one module in `web/`.
 
 ## Conventions
 
@@ -122,13 +148,70 @@ Every model rate must divide the base rate exactly (the scheduler throws otherwi
 - Redesigned fuel transfer tube lets all 33 engines light simultaneously.
 - Pad: two separate quick disconnect systems instead of one.
 
+## Runtime architecture (planned)
+
+Flight controllers at consoles watch live telemetry and make real-time decisions, with visuals alongside. One machine runs the server; everyone else joins from a browser on the same local network. The sim is the authority and everything else is a client.
+
+```
+                               one host machine                          other laptops on the LAN
+  +------------------------------------------------------------------+
+  |  sim_server (sim_core + sim_vehicle, flight software in lockstep)|
+  |  owns sim time and truth; session and roles; command log         |-- truth snapshots ---> browser outside view, webcast HUD
+  +------------------------------------------------------------------+   (WebSocket, binary)
+        |                                                             \-- camera feeds -----> camera views inside consoles
+        |                                                                 (via video downlink model)
+        | downlink (via comms model)        ^ uplink (via comms model)
+        v CCSDS packets                     | commands                  <--- supervisor station (browser,
+  +------------------------------------------------------------------+         privileged: faults, time, weather)
+  |  Yamcs (XTCE telemetry/command database, archive, web API)       |
+  +------------------------------------------------------------------+
+        | WebSocket                         ^ commands
+        v                                   |
+     Open MCT consoles in the browser: FLIGHT, PROP, GNC, POWER, THERMAL, STRUCT, COMMS, ...
+```
+
+- **`sim_server` is a standalone real-time process.** It owns sim time and truth, and `Pacer` still sets the pace. A client crashing, stalling, losing Wi-Fi or dropping frames never affects the sim. A client that reconnects catches up from current state (and from the Yamcs archive for history), not by asking the sim to wait.
+- **Browser first.** Every client is a web page served on the LAN: lobby, consoles, 3D views, HUD, supervisor. Nothing to install on participant laptops; any OS works. There is no native renderer: 3D is rendered in the browser so it can be embedded directly in console layouts.
+- **Sessions and roles.** The host starts a scenario; participants open the server URL, pick a console position and a name. Each position sees the displays and holds the command permissions of that discipline (PROP can command propulsion, not GNC), enforced on the server, the way real consoles have command authority per position. The flight director position can see everything downlinked and gives the go/no-go calls.
+- **Configurable crew size, from one person to a full room.** The position list and how each position is staffed come from a crew configuration chosen in the lobby (presets plus a custom option, stored as a file so sessions are repeatable). Each position is in one of these states:
+  - *Staffed*: a person holds it.
+  - *Consolidated*: merged into another staffed position, which then gets its displays and command authority (for example PROP and POWER consolidated into one seat). Real control rooms consolidate positions during quiet phases, so this is realistic, not a shortcut.
+  - *Automated* (optional, later; build order item 51): a virtual controller holds it. It watches the same downlinked telemetry a person would (never truth), makes the routine calls, follows the flight rules, and escalates anomalies to the flight director rather than silently fixing them. It is deliberately no better than a competent human, and its calls and commands go in the session log like anyone else's.
+
+  Example presets: *Solo* (one person holds every position consolidated, with scripted faults in place of a human supervisor), *Small crew* (2 to 4 people on consolidated positions), *Full room* (one person per position plus a human supervisor). Once virtual controllers exist, Solo and Small crew can hand some positions to automation instead. The crew configuration can change mid-session (a friend joins or leaves and positions are consolidated or split again); the handover is logged. The flight software flies the vehicle regardless of staffing. Positions only monitor, decide and command, as in a real control room.
+- **LAN scope and security.** The server binds to the local network only and is never exposed to the internet by default. A session code to join and a separate password for the supervisor role are enough for friends; this is not a hardened public service.
+- **Time.** Sim time from the server is the only clock. Clients show mission elapsed time from telemetry timestamps, never their local clock. Only the supervisor can pause or change the time scale, and it applies to everyone.
+- **Three output streams, with different trust levels.**
+  - *Truth snapshots* (60 to 120 Hz, binary over WebSocket) go only to the outside view and webcast HUD, which play the "outside camera" and may see truth. Consoles never subscribe to this stream.
+  - *Camera feeds* go to the camera views embedded in consoles. Each onboard camera is a sensor model (phase 6, item 37) with a mount point, field of view and exposure, and its feed passes through a video downlink model (frame rate, latency, bandwidth, dropouts, blackout) before it leaves the server. The browser renders the camera's view from that degraded stream and adds noise and compression artifacts driven by link quality. If the link drops, the view freezes or goes dark, exactly as a real feed would.
+  - *Downlinked telemetry* (CCSDS) goes through the comms model, with its latency, bandwidth limits, dropouts and plasma blackout, before it reaches Yamcs. **Consoles see only downlinked telemetry, never truth**, the same way flight software sees only `fsw::Hal`. A telemetry gap should look like a telemetry gap, not like perfect data.
+- **Commands take the real path.** A console sends a command; Yamcs checks it against the XTCE command database; it goes uplink through the comms model (latency, blackout); flight software receives and executes it. Nothing on the ground writes sim state directly.
+- **Determinism with humans in the loop.** Every command is recorded with the sim step at which it is applied on board. The seed plus the command log reproduces the run bit for bit, for replay and debrief.
+- **Supervisor (instructor) station.** A separate privileged client that injects faults, changes weather and controls time (pause, slow motion). Controllers do not see its actions except through their effects on telemetry. The supervisor can be a person or a script: solo or without a volunteer, a fault script picked in the lobby (or randomized from a seed, without telling the crew which faults it contains) plays the role. Supervisor actions go in the same log so replays include them.
+- **Visual clients are only stream consumers.** Any number of 3D views (outside view, and camera views inside each console) can run at once, and the rendering library can change without touching the sim.
+- **Documented protocols.** The snapshot format and the session/role API are versioned and documented, like the XTCE database, so clients can be written in any language.
+
 ## Rendering plan (not started)
 
-Godot 4, driven through a GDExtension (`godot_bridge/`) that wraps the sim. The sim runs on its own thread and publishes snapshots; the bridge interpolates between the two latest for each render frame. Godot's physics is not used: the rocket is a `Node3D` whose transform comes from the sim. Blender models: each moving part (gimbaled engines, grid fins, flaps, legs) is its own object with its origin at the pivot and local axes aligned with its rotation axes; export glTF or import `.blend` directly. Large distances: camera-relative rendering / origin shifting first, Godot double-precision build later if needed. Plumes with `GPUParticles3D` plus a shader driven by throttle and ambient pressure; entry glow driven by the heating model. Telemetry HUD in Godot `Control` nodes; detailed analysis by plotting CSV logs in Python.
+All rendering is in the browser (WebGL, WebGPU later if useful), in `web/`. No native renderer. One shared rendering module draws the vehicle and scene; it is used in two ways:
+
+- **Outside view and webcast HUD.** Driven by the truth snapshot stream. CesiumJS is the leading candidate because it gives a WGS-84 globe, terrain and imagery for free, which fits ascent, entry and the planned ECEF frames (phase 0, item 2); three.js for close-in scenes (pad, tower catch, hot staging) if Cesium is too limiting there. Large distances: camera-relative rendering (Cesium does this already).
+- **Camera views embedded in consoles.** Each position's layout includes the onboard cameras that discipline would watch: PROP gets engine bay and plume cameras, GNC gets views that show attitude and grid fin or flap motion, STRUCT gets cameras on the interstage and tank domes, and so on. They are panels inside the Open MCT layout (a custom Open MCT view), driven by the degraded camera feed stream, never the truth stream. The camera list per position lives in the crew configuration.
+
+Both interpolate between the two latest samples per frame and must run on an ordinary laptop: several camera panels plus plots on one screen. Budget for that with LODs, a capped resolution per panel, and frame rate tied to the feed's own frame rate (a 30 fps camera feed does not need 60 fps rendering).
+
+Models and effects:
+- Blender models: each moving part (gimbaled engines, grid fins, flaps, legs) is its own object with its origin at the pivot and local axes aligned with its rotation axes. Export glTF, with web-weight LODs so laptops on Wi-Fi load it quickly.
+- Animate actual actuator positions from the stream, never commanded ones.
+- Plumes driven by throttle and ambient pressure; entry glow driven by the heating model.
+
+Detailed analysis by plotting CSV logs in Python.
 
 ## Mission control plan (phase 10)
 
-CCSDS packets and an XTCE telemetry and command database between vehicle and ground, served by Yamcs, with Open MCT displays and a webcast-style HUD.
+CCSDS packets and an XTCE telemetry and command database between vehicle and ground, served by Yamcs (Java, runs on the host). Operator consoles are an Open MCT web app served on the LAN and connected to Yamcs, with one layout per position (flight director, propulsion, GNC, power, thermal, structures, comms): live plots, limit alarms, event logs and command panels, all fed by downlinked telemetry only. Commanding follows the uplink path described in the runtime architecture, with command permissions per position. The webcast-style HUD on the 3D view is the public-facing display, separate from the consoles.
+
+Later, optional: voice loops between positions (WebRTC in the browser), since real mission control coordinates by voice; flight rules and procedures shown alongside the consoles.
 
 ## Build order
 
@@ -136,11 +219,11 @@ Systems in dependency order. Update the Status column as work lands (To do, In p
 
 | # | Phase | System | Status | Notes |
 |---|---|---|---|---|
-| 1 | 0 Foundations | Sim executive | In progress | Done: fixed step, rate-group scheduler, deterministic seeds, CSV logging, real-time pacer. To do: save/restore, async logging |
+| 1 | 0 Foundations | Sim executive | In progress | Done: fixed step, rate-group scheduler, deterministic seeds, CSV logging, real-time pacer, standalone `sim_server` on the LAN with truth stream v1 over WebSocket and browser outside view. To do: save/restore, async logging, sessions and console roles, configurable crew (staffed and consolidated positions), command log for replay |
 | 2 | 0 Foundations | Reference frames and Earth model | To do | WGS-84, ECI/ECEF, Earth rotation, site ENU frames, body frames |
 | 3 | 0 Foundations | Gravity | To do | J2 first, then truncated EGM2008 (currently uniform placeholder) |
 | 4 | 0 Foundations | Atmosphere | In progress | Done: US76 0 to 86 km. To do: NRLMSISE-00 above ~80 km |
-| 5 | 0 Foundations | Wind and weather | To do | Altitude wind profiles, Dryden/von Karman turbulence, gusts |
+| 5 | 0 Foundations | Wind and weather | Done | Altitude wind profiles, seeded Dryden/von Karman turbulence, one-cosine gusts, and coupling to air-relative hopper drag. Default weather is an illustrative generic estimate, not Starship or Starbase flight data |
 | 6 | 0 Foundations | Site geometry | To do | Starbase pad, tower, terrain, ocean surface |
 | 7 | 1 Vehicle core | 6DOF rigid body dynamics | In progress | Done: 6DOF with quaternions for the test hopper. To do: variable-mass terms, Booster, Ship, stacked config |
 | 8 | 1 Vehicle core | Mass properties | To do | Dry mass breakdown, tank geometry, live CG and inertia from propellant levels |
@@ -172,22 +255,27 @@ Systems in dependency order. Update the Status column as work lands (To do, In p
 | 34 | 6 Sensors and gauges | Structural sensors | To do | Strain gauges and accelerometers along the airframe |
 | 35 | 6 Sensors and gauges | Thermal sensors | To do | Thermocouples behind tiles, on steel, in engine bays |
 | 36 | 6 Sensors and gauges | Power sensors | To do | Battery V/I/temp/SoC, bus voltages |
-| 37 | 6 Sensors and gauges | Cameras | To do | Rendered onboard views with exposure, noise, compression, sent over comms model |
+| 37 | 6 Sensors and gauges | Cameras | To do | Camera sensor models (mount point, FOV, exposure) and video downlink model; feeds rendered in the browser inside console layouts, degraded by link quality |
 | 38 | 6 Sensors and gauges | Ground sensors | To do | Tower arm positions, load cells, pad and tank farm |
 | 39 | 7 Ground and tower | Pad and propellant loading | To do | Loading sequence, chill-down, two quick disconnects (V3), deluge, clamps |
 | 40 | 7 Ground and tower | Tower and catch arms | To do | Arm kinematics and control, catch-point contact, load absorption |
 | 41 | 8 Multibody events | Hot staging | To do | Plume on booster dome, separation forces, contact dynamics, interstage actuators |
 | 42 | 8 Multibody events | Booster flip and boostback | To do | Pitch-around with propellant motion and relights |
-| 43 | 9 Flight software | Navigation (EKF) | In progress | Done: vertical complementary filter (IMU + altimeter). To do: full EKF with attitude, GNSS, sensor voting |
+| 43 | 9 Flight software | Navigation (EKF) | In progress | Done: vertical complementary filter (IMU + altimeter), gyro-integrated attitude, and IMU-only ENU velocity dead reckoning. To do: GNSS aiding, full EKF and sensor voting |
 | 44 | 9 Flight software | Guidance | In progress | Done: hop guidance with braking limit from the throttle floor. To do: ascent, boostback targeting, entry, powered landing (G-FOLD style) |
-| 45 | 9 Flight software | Control | In progress | Done: cascade altitude/velocity PID to throttle. To do: attitude control via TVC, actuator allocation, gain scheduling |
+| 45 | 9 Flight software | Control | In progress | Done: cascade altitude/velocity PID to throttle, pitch/yaw attitude PD via TVC, and horizontal velocity damping. To do: actuator allocation and gain scheduling |
 | 46 | 9 Flight software | Sequencing | In progress | Done: hop mode state machine with touchdown confirmation. To do: countdown, staging, relights, flip, catch |
 | 47 | 9 Flight software | FDIR | To do | Engine-out compensation, sensor failures, aborts |
-| 48 | 10 Mission control and validation | Ground segment | To do | Yamcs or Open MCT telemetry/commanding, gauges, webcast-style HUD |
-| 49 | 10 Mission control and validation | Fault injection and Monte Carlo | To do | Scripted failures, thousands of randomized runs |
+| 48 | 10 Mission control and validation | Ground segment | To do | Yamcs telemetry/command database, Open MCT web consoles per position (downlinked telemetry only), commanding through the uplink path with per-position permissions, per-position camera views, browser outside view and webcast-style HUD |
+| 49 | 10 Mission control and validation | Fault injection and Monte Carlo | To do | Scripted failures, live fault injection from the supervisor station, thousands of randomized runs |
 | 50 | 10 Mission control and validation | Validation against real flights | To do | Extract webcast telemetry (speed, altitude, propellant, engines) and compare |
+| 51 | 10 Mission control and validation | Virtual controllers (optional) | To do | Only after the staffed mission control loop works end to end. Automated positions that read downlinked telemetry only, follow flight rules, escalate to the flight director |
 
 ## Lessons already learned (keep these in mind)
 
 - The throttle floor limits braking. At 40% minimum throttle and near full propellant, the hopper can only decelerate a climb at about 1.5 m/s², so guidance must limit climb rate to `sqrt(2 * a_brake * distance_to_go)` or it overshoots (it went to 59 m on a 50 m hop before this fix). The same physics drives Starship's hoverslam landing.
 - Declare touchdown on contact (low altitude AND stopped, confirmed over time), not at an altitude threshold, or the engine cuts early and the vehicle drops the last stretch.
+- One stalled network client must never stall the others. The first server wrote to every client from one thread with blocking writes, and a single client that stopped reading froze everyone after about 9 s. Per-client queues and sender threads fixed it; `tools/e2e/server_smoke.py` keeps it fixed.
+- Snapshot rates must divide 1 kHz: 60 Hz is rejected by the scheduler, so the truth stream runs at 100 Hz and the browser interpolates.
+- A one-shot message (the final halted snapshot) needs a strictly increasing `step` and a guaranteed path through the ring, or clients that de-duplicate by step silently miss it.
+- civetweb matches MIME types by path suffix (`.js=text/javascript`, with the dot), and browsers refuse ES modules served with the wrong type.

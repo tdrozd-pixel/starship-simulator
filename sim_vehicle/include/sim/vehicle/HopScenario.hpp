@@ -6,14 +6,21 @@
 
 #include "fsw/HopFlightComputer.hpp"
 #include "sim/core/Simulation.hpp"
+#include "sim/env/Weather.hpp"
 #include "sim/vehicle/FlightSoftwareModel.hpp"
 #include "sim/vehicle/HopperDynamics.hpp"
 #include "sim/vehicle/HopperParams.hpp"
 #include "sim/vehicle/Sensors.hpp"
+#include "sim/vehicle/TruthSnapshot.hpp"
+#include "sim/vehicle/TruthSnapshotPublisher.hpp"
 
 namespace sim::vehicle {
 
 struct HopScenarioOptions {
+    HopScenarioOptions() {
+        weather.gusts.push_back({Eigen::Vector3d(100.0, 0.0, 0.0), 8.0, 1.0});
+    }
+
     uint64_t seed = 1;
     bool idealSensors = false;  // "truth mode": perfect sensors for tuning control
     std::string logPath;        // empty: no CSV log
@@ -22,14 +29,21 @@ struct HopScenarioOptions {
     double altimeterRateHz = 50.0;
     HopperParams vehicle;
     fsw::HopConfig hop;         // vehicle-knowledge fields are filled from `vehicle`
+    TruthSnapshotSink* snapshotSink = nullptr;  // non-owning; null: no publisher
+    double snapshotRateHz = 100.0;
     ImuSpec imu;
     AltimeterSpec altimeter;
+    env::WeatherParameters weather;
+    Eigen::Quaterniond initialAttitude = Eigen::Quaterniond::Identity();
+    Eigen::Vector3d initialAngularRate = Eigen::Vector3d::Zero();
 };
 
 struct HopScenario {
     std::unique_ptr<Simulation> sim;
     HopperDynamics* vehicle = nullptr;
     FlightSoftwareModel* fsw = nullptr;
+    env::WeatherModel* weather = nullptr;
+    TruthSnapshotPublisher* snapshotPublisher = nullptr;  // null when no sink was given
 };
 
 // Builds and initializes the vertical hop: vehicle on the pad, IMU, radar

@@ -1,0 +1,354 @@
+#include "TestFramework.hpp"
+
+#if SIM_HAVE_SERVER
+
+#include <atomic>
+#include <bit>
+#include <chrono>
+#include <cstdint>
+#include <limits>
+#include <vector>
+#include <string>
+#include <thread>
+
+#include "sim/server/JsonMessages.hpp"
+#include "sim/server/SimRunner.hpp"
+#include "sim/server/SnapshotRing.hpp"
+#include "sim/server/WireFormat.hpp"
+
+namespace {
+
+using namespace sim::server;
+using sim::vehicle::TruthSnapshot;
+
+uint64_t readLe(const uint8_t* p, int bytes) {
+    uint64_t v = 0;
+    for (int i = 0; i < bytes; ++i) {
+        v |= static_cast<uint64_t>(p[i]) << (8 * i);
+    }
+    return v;
+}
+
+double readF64(const WireSnapshot& w, std::size_t off) { return std::bit_cast<double>(readLe(w.data() + off, 8)); }
+
+TruthSnapshot numbered(uint64_t n) {
+    TruthSnapshot s;
+    s.step = n;
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE(snapshot_wire_layout) {
+    TruthSnapshot s;
+    s.runId = 0x01020304u;
+    s.flags = 0x5u;
+    s.step = 0x1122334455667788ull;
+    s.simTime = 1.5;
+    s.position[0] = 2.0;
+    s.position[1] = 3.0;
+    s.position[2] = 4.0;
+    s.velocity[0] = 5.0;
+    s.velocity[1] = 6.0;
+    s.velocity[2] = 7.0;
+    s.attitude[0] = 8.0;
+    s.attitude[1] = 9.0;
+    s.attitude[2] = 10.0;
+    s.attitude[3] = 11.0;
+    s.angularRate[0] = 12.0;
+    s.angularRate[1] = 13.0;
+    s.angularRate[2] = 14.0;
+    s.throttle = 15.0;
+    s.gimbalPitch = 16.0;
+    s.gimbalYaw = 17.0;
+    s.propellantMass = 18.0;
+    s.totalMass = 19.0;
+
+    WireSnapshot w{};
+    encodeSnapshot(s, w);
+    static_assert(kSnapshotWireSize == 176);
+    static_assert(sizeof(WireSnapshot) == 176);
+    CHECK(w[0] == 'S' && w[1] == 'S' && w[2] == 'T' && w[3] == 'R');
+    CHECK(readLe(w.data() + 4, 2) == 1);
+    CHECK(readLe(w.data() + 6, 2) == 1);
+    CHECK(readLe(w.data() + 8, 4) == 0x01020304u);
+    CHECK(w[8] == 0x04);  // little-endian: low byte first
+    CHECK(readLe(w.data() + 12, 4) == 5u);
+    CHECK(readLe(w.data() + 16, 8) == 0x1122334455667788ull);
+
+    // Literal offsets from the protocol document, not the named constants.
+    const std::size_t offsets[] = {24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168};
+    for (std::size_t i = 0; i < 19; ++i) {
+        CHECK_NEAR(readF64(w, offsets[i]), i == 0 ? 1.5 : static_cast<double>(i + 1), 1e-12);
+    }
+
+    TruthSnapshot d;
+    CHECK(decodeSnapshot(w.data(), w.size(), d));
+    CHECK(d.runId == s.runId && d.flags == s.flags && d.step == s.step);
+    CHECK(d.simTime == 1.5 && d.position[2] == 4.0 && d.velocity[0] == 5.0 && d.attitude[3] == 11.0);
+    CHECK(d.angularRate[2] == 14.0 && d.throttle == 15.0 && d.gimbalPitch == 16.0 && d.gimbalYaw == 17.0);
+    CHECK(d.propellantMass == 18.0 && d.totalMass == 19.0);
+
+    WireSnapshot bad = w;
+    bad[0] = 'X';
+    CHECK(!decodeSnapshot(bad.data(), bad.size(), d));
+    CHECK(!decodeSnapshot(w.data(), w.size() - 1, d));
+    CHECK(!decodeSnapshot(w.data(), w.size() + 1, d));
+}
+
+TEST_CASE(ring_orders_and_is_bounded) {
+    SnapshotRing ring;
+    TruthSnapshot out;
+    CHECK(!ring.tryPop(out));
+    for (uint64_t i = 0; i < SnapshotRing::kCapacity; ++i) {
+        CHECK(ring.tryPush(numbered(i)));
+    }
+    CHECK(!ring.tryPush(numbered(999999)));  // full: refused, nothing overwritten
+    for (uint64_t i = 0; i < SnapshotRing::kCapacity; ++i) {
+        CHECK(ring.tryPop(out));
+        CHECK(out.step == i);
+    }
+    CHECK(!ring.tryPop(out));
+    // Wraparound: push and pop past the capacity several times.
+    uint64_t next = 0;
+    for (uint64_t round = 0; round < 5000; ++round) {
+        CHECK(ring.tryPush(numbered(round)));
+        CHECK(ring.tryPop(out));
+        CHECK(out.step == round);
+        ++next;
+    }
+    CHECK(next == 5000);
+}
+
+namespace {
+
+// Every field derives from n, so a torn copy shows up as an inconsistency.
+TruthSnapshot filled(uint64_t n) {
+    TruthSnapshot s;
+    const double d = static_cast<double>(n);
+    s.runId = static_cast<uint32_t>(n);
+    s.flags = static_cast<uint32_t>(n * 3u);
+    s.step = n;
+    s.simTime = d * 0.5;
+    for (int i = 0; i < 3; ++i) {
+        s.position[i] = d + i;
+        s.velocity[i] = d * 2 + i;
+        s.angularRate[i] = d * 3 + i;
+    }
+    for (int i = 0; i < 4; ++i) {
+        s.attitude[i] = d * 4 + i;
+    }
+    s.throttle = d * 5;
+    s.gimbalPitch = d * 6;
+    s.gimbalYaw = d * 7;
+    s.propellantMass = d * 8;
+    s.totalMass = d * 9;
+    return s;
+}
+
+bool consistent(const TruthSnapshot& s, uint64_t n) {
+    const TruthSnapshot e = filled(n);
+    bool ok = s.runId == e.runId && s.flags == e.flags && s.step == e.step && s.simTime == e.simTime;
+    for (int i = 0; i < 3; ++i) {
+        ok = ok && s.position[i] == e.position[i] && s.velocity[i] == e.velocity[i] &&
+             s.angularRate[i] == e.angularRate[i];
+    }
+    for (int i = 0; i < 4; ++i) {
+        ok = ok && s.attitude[i] == e.attitude[i];
+    }
+    return ok && s.throttle == e.throttle && s.gimbalPitch == e.gimbalPitch && s.gimbalYaw == e.gimbalYaw &&
+           s.propellantMass == e.propellantMass && s.totalMass == e.totalMass;
+}
+
+}  // namespace
+
+TEST_CASE(ring_spsc_threads) {
+    constexpr uint64_t kCount = 1500000;
+    SnapshotRing ring;
+    std::atomic<bool> abort{false};
+    std::thread producer([&] {
+        for (uint64_t i = 0; i < kCount && !abort.load(std::memory_order_relaxed);) {
+            if (ring.tryPush(filled(i))) {
+                ++i;
+            }
+        }
+    });
+    uint64_t expected = 0;
+    bool ok = true;
+    TruthSnapshot out;
+    while (expected < kCount) {
+        if (ring.tryPop(out)) {
+            if (!consistent(out, expected)) {
+                ok = false;
+                abort = true;
+                break;
+            }
+            ++expected;
+        }
+    }
+    producer.join();
+    CHECK(ok);
+    CHECK(expected == kCount);
+}
+
+TEST_CASE(json_messages) {
+    HelloInfo info;
+    info.runId = 3;
+    const std::string hello = makeHello(info);
+    CHECK(hello.find("\"type\":\"hello\"") != std::string::npos);
+    CHECK(hello.find("\"protocol\":1") != std::string::npos);
+    CHECK(hello.find("\"snapshotRateHz\":100") != std::string::npos);
+    CHECK(hello.find("\"runId\":3") != std::string::npos);
+    CHECK(hello.find("\"scenario\":\"hop\"") != std::string::npos);
+    CHECK(makeRunStarted(4) == "{\"type\":\"run_started\",\"runId\":4}");
+
+    CHECK(parseClientMessage("{\"type\":\"restart\"}") == ClientMsg::Restart);
+    CHECK(parseClientMessage("  { \"type\" :\n \"restart\" , \"x\": 1 } ") == ClientMsg::Restart);
+    CHECK(parseClientMessage("{\"type\":\"explode\"}") == ClientMsg::Unknown);
+    CHECK(parseClientMessage("garbage") == ClientMsg::Unknown);
+    CHECK(parseClientMessage("") == ClientMsg::Unknown);
+    CHECK(parseClientMessage("{\"type\":") == ClientMsg::Unknown);
+    CHECK(parseClientMessage("{\"type\":restart}") == ClientMsg::Unknown);
+
+    // "type" inside string values or nested containers must not match.
+    { const std::string m = R"({"note":"\"type\":\"restart\""})"; CHECK(parseClientMessage(m) == ClientMsg::Unknown); }
+    { const std::string m = R"({"note":"\"type\":\"restart\"","type":"restart"})"; CHECK(parseClientMessage(m) == ClientMsg::Restart); }
+    { const std::string m = R"({"a":{"type":"restart"}})"; CHECK(parseClientMessage(m) == ClientMsg::Unknown); }
+    { const std::string m = R"({"a":[1,{"type":"restart"}],"type":"restart"})"; CHECK(parseClientMessage(m) == ClientMsg::Restart); }
+    { const std::string m = R"([{"type":"restart"}])"; CHECK(parseClientMessage(m) == ClientMsg::Unknown); }
+    { const std::string m = R"({"type":1})"; CHECK(parseClientMessage(m) == ClientMsg::Unknown); }
+    { const std::string m = R"({"type":"restart)"; CHECK(parseClientMessage(m) == ClientMsg::Unknown); }
+    CHECK(parseClientMessage("   ") == ClientMsg::Unknown);
+    const std::string huge(2000000, '{');
+    CHECK(parseClientMessage(huge) == ClientMsg::Unknown);
+    const std::string hugeString = "{\"a\":\"" + std::string(2000000, 'x') + "\",\"type\":\"restart\"}";
+    CHECK(parseClientMessage(hugeString) == ClientMsg::Restart);
+}
+
+TEST_CASE(hello_survives_long_names_and_bad_numbers) {
+    HelloInfo info;
+    info.vehicleName = std::string(2000, 'a') + "\"quoted\"";
+    info.timeScale = std::numeric_limits<double>::infinity();
+    const std::string hello = makeHello(info);
+    CHECK(hello.size() > 2000);
+    CHECK(hello.find("\\\"quoted\\\"") != std::string::npos);
+    CHECK(hello.front() == '{' && hello.back() == '}');
+    CHECK(hello.find("inf") == std::string::npos);
+}
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+SimRunnerConfig fastRunnerConfig() {
+    SimRunnerConfig c;
+    c.timeScale = 50.0;
+    c.maxSimTime = 120.0;
+    c.autostart = true;
+    return c;
+}
+
+// Pops until `pred` is true or the deadline passes, recording what it saw.
+template <typename Pred>
+bool drainUntil(SnapshotRing& ring, std::vector<TruthSnapshot>& seen, Pred pred, double timeoutSeconds = 30.0) {
+    const auto deadline = Clock::now() + std::chrono::duration<double>(timeoutSeconds);
+    TruthSnapshot s;
+    while (Clock::now() < deadline) {
+        if (ring.tryPop(s)) {
+            seen.push_back(s);
+            if (pred(s)) {
+                return true;
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    return false;
+}
+
+bool isHalted(const TruthSnapshot& s) { return (s.flags & sim::vehicle::kSnapHalted) != 0; }
+
+}  // namespace
+
+TEST_CASE(runner_restart_stamps_new_run) {
+    SnapshotRing ring;
+    SimRunner runner(fastRunnerConfig(), ring);
+    runner.start();
+    std::vector<TruthSnapshot> seen;
+    CHECK(drainUntil(ring, seen, [](const TruthSnapshot& s) { return s.runId == 1 && s.step >= 100; }));
+    runner.requestRestart();
+    CHECK(drainUntil(ring, seen, [](const TruthSnapshot& s) { return s.runId == 2 && s.step >= 100; }));
+    runner.stop();
+
+    bool sawNew = false;
+    bool oldAfterNew = false;
+    uint64_t firstNewStep = ~0ull;
+    for (const TruthSnapshot& s : seen) {
+        CHECK(s.runId == 1 || s.runId == 2);
+        if (s.runId == 2) {
+            if (!sawNew) {
+                firstNewStep = s.step;
+            }
+            sawNew = true;
+        } else if (sawNew) {
+            oldAfterNew = true;
+        }
+    }
+    CHECK(sawNew);
+    CHECK(!oldAfterNew);
+    CHECK(firstNewStep == 0);
+    CHECK(runner.runId() == 2);
+}
+
+TEST_CASE(runner_stop_while_halted_is_prompt) {
+    SnapshotRing ring;
+    SimRunnerConfig config = fastRunnerConfig();
+    config.timeScale = 100.0;
+    SimRunner runner(config, ring);
+    runner.start();
+    std::vector<TruthSnapshot> seen;
+    CHECK(drainUntil(ring, seen, isHalted));
+    const auto t0 = Clock::now();
+    runner.stop();
+    CHECK(std::chrono::duration<double>(Clock::now() - t0).count() < 1.0);
+    CHECK(!runner.failed());
+}
+
+TEST_CASE(runner_waits_for_client_before_starting) {
+    SnapshotRing ring;
+    std::atomic<bool> present{false};
+    std::atomic<int> waitingCalls{0};
+    SimRunnerConfig config = fastRunnerConfig();
+    config.autostart = false;
+    config.clientPresent = [&present] { return present.load(); };
+    config.onWaitingForClient = [&waitingCalls] { ++waitingCalls; };
+    SimRunner runner(config, ring);
+    runner.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    TruthSnapshot s;
+    CHECK(!ring.tryPop(s));
+    CHECK(runner.runId() == 0);
+    present = true;
+    std::vector<TruthSnapshot> seen;
+    CHECK(drainUntil(ring, seen, [](const TruthSnapshot&) { return true; }, 10.0));
+    CHECK(waitingCalls.load() == 1);
+    CHECK(!seen.empty() && seen.front().step == 0);
+    runner.stop();
+}
+
+TEST_CASE(runner_final_snapshot_survives_full_ring) {
+    SnapshotRing ring;
+    SimRunnerConfig config = fastRunnerConfig();
+    config.timeScale = 100.0;
+    SimRunner runner(config, ring);
+    runner.start();
+    // Do not consume: the ring (2048) fills before the ~4000-snapshot run ends,
+    // and the final halted snapshot has to wait for room instead of being lost.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    std::vector<TruthSnapshot> seen;
+    CHECK(drainUntil(ring, seen, isHalted));
+    CHECK(runner.droppedSnapshots() > 0);
+    runner.stop();
+}
+
+#endif  // SIM_HAVE_SERVER

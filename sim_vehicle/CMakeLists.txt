@@ -3,6 +3,7 @@ add_library(sim_vehicle STATIC
     src/Sensors.cpp
     src/FlightSoftwareModel.cpp
     src/TelemetryLogger.cpp
+    src/TruthSnapshotPublisher.cpp
     src/HopScenario.cpp)
 
 target_include_directories(sim_vehicle PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

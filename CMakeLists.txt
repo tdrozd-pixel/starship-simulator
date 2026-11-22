@@ -15,6 +15,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(SIM_ENABLE_TRACY "Build with the Tracy profiler client" OFF)
+option(SIM_BUILD_SERVER "Build sim_server (fetches civetweb)" ON)
 option(SIM_BUILD_TESTS "Build unit and scenario tests" ON)
 
 include(cmake/Dependencies.cmake)
@@ -25,10 +26,14 @@ include(cmake/CompilerWarnings.cmake)
 #   sim_core    : simulation framework and environment models
 #   sim_vehicle : vehicle models, sensors and the flight software bridge
 #   sim_cli     : headless runner
+#   sim_server  : real-time server, depends on sim_vehicle
 add_subdirectory(flight_sw)
 add_subdirectory(sim_core)
 add_subdirectory(sim_vehicle)
 add_subdirectory(sim_cli)
+if(SIM_BUILD_SERVER)
+    add_subdirectory(sim_server)
+endif()
 
 if(SIM_BUILD_TESTS)
     enable_testing()

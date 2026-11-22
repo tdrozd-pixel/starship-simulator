@@ -38,11 +38,19 @@ struct HopConfig {
     double ispSeaLevel = 0.0;
     double minThrottle = 0.0;
     double gravity = 9.80665;
+    double vehicleRadius = 0.0;       // [m]
+    double vehicleLength = 0.0;       // [m]
+    double engineLeverArm = 0.0;      // [m]
+    double gimbalLimit = 0.0;         // [rad]
 
     double altitudeKp = 0.8;  // [1/s]
     double maxClimbRate = 6.0;
     double maxSinkRate = 4.0;
     PidGains velocityGains{2.0, 0.6, 0.0, -4.0, 6.0, 2.0};  // output: accel [m/s^2]
+    double horizontalVelocityKp = 0.5;  // [1/s]
+    double maxHorizontalAccel = 0.8;     // [m/s^2]
+    double attitudeKp = 2.0;             // [1/s^2]
+    double attitudeKd = 2.5;             // [1/s]
 };
 
 enum class HopMode : int {
@@ -71,6 +79,7 @@ public:
 private:
     void updateNavigation(double dt);
     void updateModeLogic(double t, double dt);
+    void updateTvc();
     double computeThrottle(double velocitySetpoint, double dt);
     double maxClimbRateToStopWithin(double distance) const;
 
@@ -79,6 +88,9 @@ private:
     VerticalEstimator estimator_;
     Pid velocityPid_;
 
+    double attitude_[4] = {1.0, 0.0, 0.0, 0.0};  // estimated body to world
+    double velocityWorld_[3] = {};                // dead-reckoned ENU [m/s]
+    double angularRateBody_[3] = {};              // measured body [rad/s]
     HopMode mode_ = HopMode::Prelaunch;
     double lastTime_ = -1.0;
     double modeStartTime_ = 0.0;

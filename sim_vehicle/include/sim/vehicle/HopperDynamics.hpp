@@ -7,6 +7,7 @@
 #include "sim/core/ContinuousSystem.hpp"
 #include "sim/env/Atmosphere.hpp"
 #include "sim/env/Gravity.hpp"
+#include "sim/env/Weather.hpp"
 #include "sim/vehicle/HopperParams.hpp"
 #include "sim/vehicle/Messages.hpp"
 
@@ -77,8 +78,11 @@ private:
     HopperDeriv lastDeriv_;
     env::StandardAtmosphere1976 atmosphere_;
     env::UniformGravity gravity_;
+    env::WeatherSample weather_;
 
     const Channel<ActuatorCommandMsg>* commandChannel_ = nullptr;
+    const Channel<env::WeatherSample>* weatherChannel_ = nullptr;
+    Channel<env::WeatherConditions>* weatherConditionsChannel_ = nullptr;
     ActuatorCommandMsg command_;
 
     bool engineRunning_ = false;

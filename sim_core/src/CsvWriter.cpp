@@ -8,7 +8,13 @@ CsvWriter::~CsvWriter() { close(); }
 
 bool CsvWriter::open(const std::string& path, const std::vector<std::string>& columns) {
     close();
+#ifdef _MSC_VER
+    if (fopen_s(&file_, path.c_str(), "wb") != 0) {
+        file_ = nullptr;
+    }
+#else
     file_ = std::fopen(path.c_str(), "wb");
+#endif
     if (file_ == nullptr) {
         return false;
     }
