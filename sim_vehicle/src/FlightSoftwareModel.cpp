@@ -8,6 +8,7 @@ void SimHal::bind(Bus& bus) {
     imu_ = &bus.channel<ImuMsg>(channels::kImu);
     altimeter_ = &bus.channel<AltimeterMsg>(channels::kAltimeter);
     gnss_ = &bus.channel<GnssMsg>(channels::kGnss);
+    gimbalFeedback_ = &bus.channel<GimbalFeedbackMsg>(channels::kGimbalFeedback);
     commands_ = &bus.channel<ActuatorCommandMsg>(channels::kActuatorCmd);
     telemetry_ = &bus.channel<FswTelemetryMsg>(channels::kFswTelemetry);
 }
@@ -48,6 +49,20 @@ fsw::GnssSample SimHal::readGnss() {
     }
     sample.horizontalSigma = msg.data.horizontalSigma;
     sample.verticalSigma = msg.data.verticalSigma;
+    sample.satellitesVisible = msg.data.satellitesVisible;
+    sample.satellitesUsed = msg.data.satellitesUsed;
+    return sample;
+}
+
+fsw::GimbalFeedbackSample SimHal::readGimbalFeedback() {
+    fsw::GimbalFeedbackSample sample;
+    const auto& msg = gimbalFeedback_->latest();
+    sample.stamp = msg.stamp;
+    for (int i = 0; i < kEngineCount; ++i) {
+        sample.valid[i] = msg.valid() && msg.data.valid[i];
+        sample.pitch[i] = msg.data.pitch[i];
+        sample.yaw[i] = msg.data.yaw[i];
+    }
     return sample;
 }
 
@@ -61,6 +76,12 @@ void SimHal::commandActuators(const fsw::ActuatorCommand& command) {
 }
 
 void SimHal::publishTelemetry(const fsw::Telemetry& telemetry) { telemetry_->publish(telemetry, time_); }
+
+void SimHal::downlink(const uint8_t* packet, std::size_t length) {
+    if (downlinkQueue_ != nullptr) {
+        downlinkQueue_->push(packet, length, time_);
+    }
+}
 
 FlightSoftwareModel::FlightSoftwareModel(std::string name, const fsw::HopConfig& config)
     : Model(std::move(name), config.rateHz), config_(config) {}

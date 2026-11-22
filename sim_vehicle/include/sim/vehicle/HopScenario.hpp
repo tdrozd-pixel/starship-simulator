@@ -7,10 +7,12 @@
 #include "fsw/HopFlightComputer.hpp"
 #include "sim/core/Simulation.hpp"
 #include "sim/env/Weather.hpp"
+#include "sim/vehicle/Downlink.hpp"
 #include "sim/vehicle/FlightSoftwareModel.hpp"
 #include "sim/vehicle/HopperDynamics.hpp"
 #include "sim/vehicle/HopperParams.hpp"
 #include "sim/vehicle/Sensors.hpp"
+#include "sim/vehicle/TelemetrySink.hpp"
 #include "sim/vehicle/TruthSnapshot.hpp"
 #include "sim/vehicle/TruthSnapshotPublisher.hpp"
 
@@ -27,6 +29,8 @@ struct HopScenarioOptions {
     double logRateHz = 100.0;
     double imuRateHz = 500.0;
     double altimeterRateHz = 50.0;
+    double gimbalFeedbackRateHz = 100.0;
+    double downlinkRateHz = 100.0;
     double gnssModelRateHz = 100.0;  // times the GNSS latency; solutions come at gnss.outputRateHz
     HopperParams vehicle;
     LaunchSite site;
@@ -36,6 +40,9 @@ struct HopScenarioOptions {
     ImuSpec imu;
     AltimeterSpec altimeter;
     GnssSpec gnss;
+    GimbalFeedbackSpec gimbalFeedback;
+    TelemetrySink* telemetrySink = nullptr;  // non-owning; null: no downlink
+    DownlinkSpec downlink;
     env::WeatherParameters weather;
     Eigen::Quaterniond initialAttitude = Eigen::Quaterniond::Identity();
     Eigen::Vector3d initialAngularRate = Eigen::Vector3d::Zero();
@@ -43,10 +50,12 @@ struct HopScenarioOptions {
 
 struct HopScenario {
     std::unique_ptr<env::LocalTangentFrame> site;  // sim ENU origin = landing target
+    std::unique_ptr<DownlinkQueue> downlinkQueue;  // onboard queue, declared before sim so it outlives the models
     std::unique_ptr<Simulation> sim;
     HopperDynamics* vehicle = nullptr;
     FlightSoftwareModel* fsw = nullptr;
     env::WeatherModel* weather = nullptr;
+    DownlinkModel* downlink = nullptr;  // null when no telemetry sink was given
     TruthSnapshotPublisher* snapshotPublisher = nullptr;  // null when no sink was given
 };
 

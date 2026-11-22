@@ -4,7 +4,7 @@ Systems in dependency order. Update the Status column as work lands (To do, In p
 
 | # | Phase | System | Status | Notes |
 |---|---|---|---|---|
-| 1 | 0 Foundations | Sim executive | In progress | Done: fixed step, rate-group scheduler, deterministic seeds, CSV logging, real-time pacer, standalone `sim_server` on the LAN with truth stream v1 over WebSocket and browser outside view. To do: save/restore, async logging, sessions and console roles, configurable crew (staffed and consolidated positions), command log for replay |
+| 1 | 0 Foundations | Sim executive | In progress | Done: fixed step, rate-group scheduler, deterministic seeds, CSV logging, real-time pacer, standalone `sim_server` on the LAN with truth stream v1 over WebSocket and browser outside view, telemetry stream v1 (`/ws/telemetry`) carrying downlinked CCSDS packets. To do: save/restore, async logging, sessions and console roles, configurable crew (staffed and consolidated positions), command log for replay |
 | 2 | 0 Foundations | Reference frames and Earth model | In progress | Done: WGS-84 geodetic/ECEF/local ENU conversions (sim and an independent flight software copy); sim ENU is the tangent plane at the Starbase Pad 2 target. To do: ECI, Earth rotation, dynamics in ECEF |
 | 3 | 0 Foundations | Gravity | To do | J2 first, then truncated EGM2008 (currently uniform placeholder) |
 | 4 | 0 Foundations | Atmosphere | In progress | Done: US76 0 to 86 km. To do: NRLMSISE-00 above ~80 km |
@@ -32,11 +32,11 @@ Systems in dependency order. Update the Status column as work lands (To do, In p
 | 26 | 4 Thermal | Plasma blackout | To do | Comms effects during entry |
 | 27 | 5 Power and avionics | Electrical power | To do | Batteries, buses, actuator peak loads, voltage sag |
 | 28 | 5 Power and avionics | Avionics | To do | Redundant computers with voting, buses, timing jitter, latency, faults |
-| 29 | 5 Power and avionics | Communications | To do | Starlink links, ground stations, downlink budget |
-| 30 | 6 Sensors and gauges | Navigation sensors | In progress | Done: IMU (noise, bias, random walk, quantization), radar altimeter (slant range from the base, noise, range, dropouts), GNSS receiver (WGS-84 output at 10 Hz, antenna lever arm, latency, Gauss-Markov plus white errors, RTK and standalone presets, dropouts). To do: IMU lever arm, misalignment, GNSS multipath near the tower, star trackers, redundancy, tower-relative sensing for the catch (reported tower radar; catch-arm lidar is a candidate design, not public) |
+| 29 | 5 Power and avionics | Communications | In progress | Done: placeholder downlink model (bit rate, latency with jitter, seeded loss, FIFO) carrying CCSDS packets. To do: Starlink links, ground stations, downlink budget, uplink |
+| 30 | 6 Sensors and gauges | Navigation sensors | In progress | Done: IMU (noise, bias, random walk, quantization), radar altimeter (slant range from the base, noise, range, dropouts), GNSS receiver (WGS-84 output at 10 Hz, antenna lever arm, latency, Gauss-Markov plus white errors, RTK and standalone presets, dropouts, placeholder satellite counts). To do: IMU lever arm, misalignment, GNSS multipath near the tower, star trackers, redundancy, tower-relative sensing for the catch (reported tower radar; catch-arm lidar is a candidate design, not public) |
 | 31 | 6 Sensors and gauges | Engine instrumentation | To do | Chamber/preburner pressures, temps, pump speeds, valve positions, vibration |
 | 32 | 6 Sensors and gauges | Propellant gauges | To do | Tank levels, pressures, temps, header tank levels |
-| 33 | 6 Sensors and gauges | Actuator feedback | To do | Position, motor current and temp for gimbals, fins, flaps |
+| 33 | 6 Sensors and gauges | Actuator feedback | In progress | Done: gimbal position sensors per axis per engine (noise, bias, quantization, latency), downlinked. To do: motor current and temperature, fins, flaps |
 | 34 | 6 Sensors and gauges | Structural sensors | To do | Strain gauges and accelerometers along the airframe |
 | 35 | 6 Sensors and gauges | Thermal sensors | To do | Thermocouples behind tiles, on steel, in engine bays |
 | 36 | 6 Sensors and gauges | Power sensors | To do | Battery V/I/temp/SoC, bus voltages |
@@ -51,7 +51,7 @@ Systems in dependency order. Update the Status column as work lands (To do, In p
 | 45 | 9 Flight software | Control | In progress | Done: cascade altitude/velocity PID to throttle through the pressure-corrected thrust model, attitude PD via common gimbal, roll via differential gimbal across three engines, horizontal position/velocity PI. To do: engine-out allocation, gain scheduling |
 | 46 | 9 Flight software | Sequencing | In progress | Done: hop mode state machine with touchdown confirmation. To do: countdown, staging, relights, flip, catch |
 | 47 | 9 Flight software | FDIR | To do | Engine-out compensation, sensor failures, aborts |
-| 48 | 10 Mission control and validation | Ground segment | To do | Yamcs telemetry/command database, Open MCT web consoles per position (downlinked telemetry only), commanding through the uplink path with per-position permissions, per-position camera views, browser outside view and webcast-style HUD |
+| 48 | 10 Mission control and validation | Ground segment | In progress | Yamcs telemetry/command database, Open MCT web consoles per position (downlinked telemetry only), commanding through the uplink path with per-position permissions, per-position camera views, browser outside view and webcast-style HUD. Done so far: CCSDS telemetry from the flight computer (`docs/telemetry/gnc_packets.md`), `/ws/telemetry`, and the GNC console at `/gnc/` (interim, before Yamcs/Open MCT) |
 | 49 | 10 Mission control and validation | Fault injection and Monte Carlo | To do | Scripted failures, live fault injection from the supervisor station, thousands of randomized runs |
 | 50 | 10 Mission control and validation | Validation against real flights | To do | Extract webcast telemetry (speed, altitude, propellant, engines) and compare |
 | 51 | 10 Mission control and validation | Virtual controllers (optional) | To do | Only after the staffed mission control loop works end to end. Automated positions that read downlinked telemetry only, follow flight rules, escalate to the flight director |

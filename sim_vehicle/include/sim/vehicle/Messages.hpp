@@ -30,6 +30,14 @@ struct GnssMsg {
     Eigen::Vector3d velocityEnu = Eigen::Vector3d::Zero();  // [m/s]
     double horizontalSigma = 0.0;  // receiver-reported 1 sigma [m]
     double verticalSigma = 0.0;    // [m]
+    int satellitesVisible = 0;
+    int satellitesUsed = 0;
+};
+
+struct GimbalFeedbackMsg {
+    bool valid[kEngineCount] = {};
+    double pitch[kEngineCount] = {};  // measured, about body x [rad]
+    double yaw[kEngineCount] = {};    // measured, about body y [rad]
 };
 
 struct EngineCommandMsg {
@@ -49,6 +57,7 @@ namespace channels {
 inline constexpr const char* kImu = "sensors/imu";
 inline constexpr const char* kAltimeter = "sensors/radar_altimeter";
 inline constexpr const char* kGnss = "sensors/gnss";
+inline constexpr const char* kGimbalFeedback = "sensors/gimbal_feedback";
 inline constexpr const char* kActuatorCmd = "fsw/actuator_cmd";
 inline constexpr const char* kFswTelemetry = "fsw/telemetry";
 }  // namespace channels

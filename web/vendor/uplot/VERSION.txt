@@ -1,0 +1,4 @@
+uPlot 1.6.31 (MIT), fetched from jsdelivr, unmodified:
+https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.esm.js
+https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.min.css
+https://cdn.jsdelivr.net/npm/uplot@1.6.31/LICENSE

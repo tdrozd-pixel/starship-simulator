@@ -15,6 +15,9 @@ import threading
 
 from playwright.sync_api import sync_playwright
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir
+import gnc_checks  # noqa: E402
+
 WEB_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -147,6 +150,9 @@ def main():
                 fails.append("recorder: fixed render size not cleared after stop")
             print(f"recorder: {rate:.1f} renders/s at 30 fps, saved {name} ({nbytes} bytes)")
         fails += ["recorder: " + e for e in rec_errors]
+        # 5. GNC console: Python-packed packet cross-check, then page smoke with injected frames.
+        gnc_checks.cross_check(page, fails)
+        gnc_checks.smoke(browser, base, fails)
         browser.close()
     srv.shutdown()
     if fails:

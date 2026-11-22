@@ -114,25 +114,65 @@ struct GnssSpec {
 class GnssModel final : public Model {
 public:
     GnssModel(std::string name, double rateHz, const HopperDynamics& truth, const env::LocalTangentFrame& site,
-              const Eigen::Vector3d& antennaFromBase, GnssSpec spec, uint64_t seed);
+              const Eigen::Vector3d& antennaFromBase, GnssSpec spec, uint64_t seed,
+              uint64_t constellationSeed = 0);
 
     void initialize(Bus& bus) override;
     void update(const StepContext& ctx) override;
 
 private:
     double gaussMarkovStep(double value, double sigma, double period);
+    void stepConstellation();
 
     const HopperDynamics& truth_;
     const env::LocalTangentFrame& site_;
     Eigen::Vector3d antenna_;
     GnssSpec spec_;
     Rng rng_;
+    // Satellite counts: placeholder random walk on its own stream so the error
+    // sequence above (and therefore every flight) is unchanged.
+    // TODO(phase 6, item 30): real almanac geometry.
+    Rng constellationRng_;
+    int satellitesVisible_ = 24;  // [count]
     int stepsPerOutput_ = 1;
     int stepCounter_ = 0;
     Eigen::Vector3d bias_ = Eigen::Vector3d::Zero();  // ENU [m]
     bool pending_ = false;
     GnssMsg pendingFix_;
     Channel<GnssMsg>* out_ = nullptr;
+};
+
+}  // namespace sim::vehicle
+
+namespace sim::vehicle {
+
+// Gimbal position sensor (resolver or encoder on each actuator). Values are
+// estimates, not a SpaceX part.
+struct GimbalFeedbackSpec {
+    double noiseSigma = 1.7e-4;  // [rad] 1 sigma, estimate
+    double biasSigma = 3.5e-4;   // [rad] per-axis turn-on bias, 1 sigma, estimate
+    double quantum = 2.0 * 3.14159265358979323846 / 65536.0;  // [rad] 16-bit encoder, estimate
+    bool ideal = false;          // true: exact truth, no latency
+};
+
+// Publishes the actual gimbal positions with one sample of latency (build order item 33).
+// TODO(phase 6, item 33): failures, saturation, per-sensor mounting.
+class GimbalFeedbackModel final : public Model {
+public:
+    GimbalFeedbackModel(std::string name, double rateHz, const HopperDynamics& truth, GimbalFeedbackSpec spec,
+                        uint64_t seed);
+
+    void initialize(Bus& bus) override;
+    void update(const StepContext& ctx) override;
+
+private:
+    const HopperDynamics& truth_;
+    GimbalFeedbackSpec spec_;
+    Rng rng_;
+    EngineGimbals bias_;
+    GimbalFeedbackMsg previous_;
+    bool havePrevious_ = false;
+    Channel<GimbalFeedbackMsg>* out_ = nullptr;
 };
 
 }  // namespace sim::vehicle

@@ -4,6 +4,9 @@
 // In simulation it is implemented by sim::vehicle::SimHal; on hardware it would
 // wrap real drivers. Flight software never reads simulator truth.
 
+#include <cstddef>
+#include <cstdint>
+
 namespace fsw {
 
 // Engines this flight computer controls (Ship sea-level Raptors).
@@ -40,6 +43,16 @@ struct GnssSample {
     double velocityEnu[3] = {0.0, 0.0, 0.0};  // local east, north, up at the antenna [m/s]
     double horizontalSigma = 0.0;  // receiver's own 1-sigma accuracy estimate [m]
     double verticalSigma = 0.0;    // [m]
+    int satellitesVisible = 0;
+    int satellitesUsed = 0;
+};
+
+// Measured gimbal positions from the gimbal position sensors.
+struct GimbalFeedbackSample {
+    double stamp = 0.0;  // [s]
+    bool valid[kEngineCount] = {};
+    double pitch[kEngineCount] = {};  // about body x [rad]
+    double yaw[kEngineCount] = {};    // about body y [rad]
 };
 
 struct EngineCommand {
@@ -82,8 +95,11 @@ public:
     virtual ImuSample readImu() = 0;
     virtual AltimeterSample readAltimeter() = 0;
     virtual GnssSample readGnss() = 0;
+    virtual GimbalFeedbackSample readGimbalFeedback() = 0;
     virtual void commandActuators(const ActuatorCommand& command) = 0;
     virtual void publishTelemetry(const Telemetry& telemetry) = 0;
+    // Send one complete CCSDS packet down the telemetry link (fire and forget).
+    virtual void downlink(const uint8_t* packet, std::size_t length) = 0;
 };
 
 }  // namespace fsw

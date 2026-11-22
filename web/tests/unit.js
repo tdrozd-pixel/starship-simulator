@@ -6,6 +6,7 @@ import { createTruthClient } from '../js/truthClient.js';
 import { createInterpolator } from '../js/interpolator.js';
 import { pickMimeType, makeFilename, createFramePacer, bitrateFor } from '../js/recorder.js';
 import { buildTelemetry, vehicleNote, TELEMETRY_ROWS } from '../js/hudModel.js';
+import { runGncTests } from './gncUnit.js';
 
 const failures = [];
 let passed = 0;
@@ -357,6 +358,77 @@ test('hud model', () => {
   ok(m.engine && !m.touchdown && !m.finished, 'lamps');
   ok(vehicleNote(null) === '', 'no banner before hello');
   ok(vehicleNote({ name: 'Ship', length: 52, radius: 4.5 }) === 'Physics vehicle: Ship, length 52 m, radius 4.5 m.', 'banner text');
+});
+
+runGncTests({ ok, approx, approxArr, test });
+
+// Feed snapshots with a given arrival-latency pattern and render at 60 Hz; count
+// frames where the view stalls (moves < 25% of a normal step) or jumps (> 175%).
+function runArrivals(latencyFn, opts = {}) {
+  const it = createInterpolator({ delaySnapshots: 2.5 });
+  it.reset(1);
+  const accel = opts.accel || 0;
+  const arrivals = [];
+  for (let k = 0; k < 900; k++) arrivals.push({ k, arr: 1 + k * 0.01 + latencyFn(k) });
+  for (let i = 1; i < arrivals.length; i++) arrivals[i].arr = Math.max(arrivals[i].arr, arrivals[i - 1].arr);
+  let ai = 0, prev = null, stalls = 0, jumps = 0;
+  for (let wall = 2; wall < 9.5; wall += 1 / 60) {
+    while (ai < arrivals.length && arrivals[ai].arr <= wall) {
+      const k = arrivals[ai].k, t = k * 0.01;
+      it.push(mk(k + 1, t, { pos: [5 * t + 0.5 * accel * t * t, 0, 0], vel: [5 + accel * t, 0, 0] }), arrivals[ai].arr);
+      ai++;
+    }
+    const s = it.sample(wall);
+    if (!s) continue;
+    if (prev !== null) {
+      const ideal = (5 + accel * s.simTime) / 60, dx = s.pos[0] - prev;
+      if (dx < 0.25 * ideal) stalls++;
+      if (dx > 1.75 * ideal) jumps++;
+    }
+    prev = s.pos[0];
+  }
+  return { stalls, jumps, stats: it.stats() };
+}
+
+function lcg(seed) { let s = seed; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; }
+
+test('interp adaptive buffer on even delivery stays at the floor', () => {
+  const r = runArrivals(() => 0);
+  ok(r.stalls === 0 && r.jumps === 0, 'localhost smooth: ' + JSON.stringify(r));
+  approx(r.stats.delayMs, 25, 'delay stays at 25 ms', 1e-6);
+});
+
+test('interp adaptive buffer absorbs Wi-Fi bursts', () => {
+  const rnd = lcg(12345);
+  const r = runArrivals(() => (rnd() < 0.08 ? 0.03 + 0.05 * rnd() : 0.002 + 0.006 * rnd()));
+  ok(r.stalls === 0 && r.jumps === 0, 'wifi smooth: ' + JSON.stringify(r));
+  ok(r.stats.delayMs > 40 && r.stats.delayMs <= 250, 'delay grew: ' + r.stats.delayMs);
+});
+
+test('interp adaptive buffer absorbs power-save batching', () => {
+  const r = runArrivals((k) => Math.ceil((1 + k * 0.01) / 0.1) * 0.1 + 0.002 - (1 + k * 0.01));
+  ok(r.stalls === 0 && r.jumps === 0, 'power save smooth: ' + JSON.stringify(r));
+});
+
+test('interp extrapolation blends back without a jump', () => {
+  // Accelerating vehicle, so constant-velocity dead reckoning is slightly wrong,
+  // and a 90 ms hole in delivery forces extrapolation before the buffer adapts.
+  const r = runArrivals((k) => (k >= 150 && k < 159 ? (159 - k) * 0.01 : 0), { accel: 3 });
+  ok(r.stats.extrapolatedFrames > 0, 'extrapolated: ' + JSON.stringify(r.stats));
+  ok(r.jumps === 0 && r.stalls === 0, 'no jump or stall around the hole: ' + JSON.stringify(r));
+});
+
+test('interp extrapolation follows the body rate', () => {
+  const it = createInterpolator({ delaySnapshots: 0 });
+  const w = 0.5; // [rad/s] about body x
+  for (let k = 0; k < 5; k++) {
+    const a = w * k * 0.01;
+    it.push(mk(k + 1, k * 0.01, { quat: [Math.cos(a / 2), Math.sin(a / 2), 0, 0], angRate: [w, 0, 0] }), 10 + k * 0.01);
+  }
+  const s = it.sample(10.09); // 50 ms past the newest snapshot (0.04)
+  const ang = 2 * Math.atan2(s.quat[1], s.quat[0]);
+  approx(ang, w * 0.09, 'extrapolated rotation', 1e-6);
+  ok(it.stats().extrapolatedFrames === 1, 'counted');
 });
 
 const results = { passed, failed: failures.length, failures };

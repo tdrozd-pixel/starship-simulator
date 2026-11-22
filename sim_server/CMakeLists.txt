@@ -3,6 +3,8 @@ add_library(sim_server_core STATIC
     src/JsonMessages.cpp
     src/SimRunner.cpp
     src/TruthServer.cpp
+    src/WsEndpoint.cpp
+    src/TelemetryFrame.cpp
     src/NetUtil.cpp)
 
 target_include_directories(sim_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -28,7 +28,7 @@ build/sim_cli/sim_cli --fast --log hop.csv     # as fast as possible, CSV log
 build/sim_cli/sim_cli --ideal-sensors          # truth-mode sensors for tuning
 build/sim_cli/sim_cli --time-scale 0.25 --seed 42
 
-build/sim_server/sim_server --host 127.0.0.1   # then open http://127.0.0.1:8080/
+build/sim_server/sim_server --host 127.0.0.1   # outside view http://127.0.0.1:8080/, GNC console /gnc/
 build/sim_server/sim_server                    # LAN: binds 0.0.0.0:8080, prints a URL per address
 ```
 

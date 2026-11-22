@@ -24,6 +24,7 @@
 #include "sim/server/NetUtil.hpp"
 #include "sim/server/SimRunner.hpp"
 #include "sim/server/SnapshotRing.hpp"
+#include "sim/server/TelemetryRing.hpp"
 #include "sim/server/TruthServer.hpp"
 
 #ifdef _WIN32
@@ -131,13 +132,14 @@ int main(int argc, char** argv) {
         }
 
         sim::server::SnapshotRing ring;
+        sim::server::TelemetryRing telemetryRing;
         sim::server::TruthServer* serverPtr = nullptr;  // set before the runner starts
         runnerConfig.clientPresent = [&serverPtr] { return serverPtr != nullptr && serverPtr->clientCount() > 0; };
         runnerConfig.onWaitingForClient = [] {
             std::puts("Waiting for a client to connect...");
             std::fflush(stdout);
         };
-        sim::server::SimRunner runner(runnerConfig, ring);
+        sim::server::SimRunner runner(runnerConfig, ring, telemetryRing);
 
         sim::server::HelloInfo hello;
         const sim::vehicle::HopperParams& vehicle = runnerConfig.hop.vehicle;
@@ -146,7 +148,7 @@ int main(int argc, char** argv) {
         hello.vehicleRadius = vehicle.radius;
 
         sim::server::TruthServer server(
-            serverConfig, ring, [&runner] { return runner.runId(); }, [&runner] { runner.requestRestart(); }, hello);
+            serverConfig, ring, telemetryRing, [&runner] { return runner.runId(); }, [&runner] { runner.requestRestart(); }, hello);
 
         serverPtr = &server;
         std::signal(SIGINT, onSignal);
@@ -159,14 +161,15 @@ int main(int argc, char** argv) {
         server.start();
 
         const int port = server.boundPort();
-        std::printf("Truth server: http://localhost:%d/\n", port);
+        std::printf("Truth server: http://localhost:%d/   GNC console: http://localhost:%d/gnc/\n", port, port);
         if (serverConfig.host == "0.0.0.0") {
             for (const std::string& ip : sim::server::localIPv4Addresses()) {
-                std::printf("              http://%s:%d/\n", ip.c_str(), port);
+                std::printf("              http://%s:%d/   http://%s:%d/gnc/\n", ip.c_str(), port, ip.c_str(), port);
             }
             std::puts("(If Windows asks, allow access on Private networks so other devices can connect.)");
         } else {
-            std::printf("              http://%s:%d/\n", serverConfig.host.c_str(), port);
+            std::printf("              http://%s:%d/   http://%s:%d/gnc/\n", serverConfig.host.c_str(), port,
+                        serverConfig.host.c_str(), port);
         }
         std::printf("Time scale %.3g, seed %llu, %s sensors. Ctrl-C to stop.\n", runnerConfig.timeScale,
                     static_cast<unsigned long long>(runnerConfig.hop.seed),
@@ -183,6 +186,9 @@ int main(int argc, char** argv) {
         std::printf("Snapshots dropped (ring full): %llu, dropped for slow clients: %llu\n",
                     static_cast<unsigned long long>(runner.droppedSnapshots()),
                     static_cast<unsigned long long>(server.droppedForClients()));
+        std::printf("Telemetry frames dropped (ring full): %llu, dropped for slow clients: %llu\n",
+                    static_cast<unsigned long long>(runner.droppedTelemetry()),
+                    static_cast<unsigned long long>(server.telemetryDroppedForClients()));
         std::fflush(stdout);
         gMainDone = true;
         return runner.failed() ? EXIT_FAILURE : EXIT_SUCCESS;

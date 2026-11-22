@@ -131,6 +131,22 @@ document.addEventListener('visibilitychange', () => {
   if (recording && document.hidden) hud.setRecordStatus('Recording paused: keep this tab visible', true);
 });
 
+// ?debug=1: link health of the truth stream (jitter buffer), for diagnosing remote viewers.
+const debugEl = new URLSearchParams(location.search).get('debug') === '1' ? document.createElement('div') : null;
+let lastDebugMs = 0;
+if (debugEl) {
+  debugEl.id = 'netdebug';
+  document.getElementById('hud').appendChild(debugEl);
+}
+function updateDebug(nowMs) {
+  if (!debugEl || nowMs - lastDebugMs < 250) return;
+  lastDebugMs = nowMs;
+  const st = interp.stats();
+  debugEl.textContent = 'buffer ' + st.delayMs.toFixed(0) + ' ms (target ' + st.targetDelayMs.toFixed(0) +
+    ')  jitter ' + st.jitterMs.toFixed(0) + ' ms  starved ' + st.starvedFrames + ' (extrapolated ' +
+    st.extrapolatedFrames + ', held ' + st.heldFrames + ')';
+}
+
 // Test hook (web/tests/run_web_tests.py): rendered frame count.
 window.__viewStats = { renders: 0 };
 
@@ -157,6 +173,7 @@ function frame(now) {
   hud.update(s, now);
   renderer.render(scene, rig.camera);
   window.__viewStats.renders++;
+  updateDebug(now);
   currentSample = s;
   if (recording) {
     recording.recorder.captureFrame();

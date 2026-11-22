@@ -5,6 +5,8 @@ add_library(flight_sw STATIC
     src/VerticalEstimator.cpp
     src/HorizontalEstimator.cpp
     src/Geodesy.cpp
+    src/Ccsds.cpp
+    src/GncTelemetry.cpp
     src/HopFlightComputer.cpp)
 
 target_include_directories(flight_sw PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

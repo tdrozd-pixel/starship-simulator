@@ -1,5 +1,6 @@
 #include "sim/server/SimRunner.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -8,7 +9,8 @@
 
 namespace sim::server {
 
-SimRunner::SimRunner(const SimRunnerConfig& config, SnapshotRing& ring) : config_(config), ring_(ring) {}
+SimRunner::SimRunner(const SimRunnerConfig& config, SnapshotRing& ring, TelemetryRing& telemetryRing)
+    : config_(config), ring_(ring), telemetryRing_(telemetryRing) {}
 
 SimRunner::~SimRunner() { stop(); }
 
@@ -53,6 +55,21 @@ void SimRunner::push(const vehicle::TruthSnapshot& snapshot) noexcept {
     dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
+void SimRunner::deliver(const uint8_t* packet, std::size_t length, double groundTime) noexcept {
+    if (packet == nullptr || length > vehicle::kMaxTelemetryPacket) {
+        telemetryDropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    TelemetryItem item;
+    item.runId = runId_.load(std::memory_order_relaxed);
+    item.groundTime = groundTime;
+    item.length = static_cast<uint16_t>(length);
+    std::copy(packet, packet + length, item.bytes);
+    if (!telemetryRing_.tryPush(item)) {
+        telemetryDropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 void SimRunner::threadMain() {
     try {
         while (!stop_) {
@@ -74,6 +91,7 @@ void SimRunner::threadMain() {
 
             vehicle::HopScenarioOptions options = config_.hop;
             options.snapshotSink = this;
+            options.telemetrySink = this;
             // Allocation is fine here: this is outside the step loop.
             vehicle::HopScenario scenario = vehicle::buildHopScenario(options);
 

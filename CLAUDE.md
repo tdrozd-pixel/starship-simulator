@@ -2,7 +2,7 @@
 
 Engineering-grade simulation of SpaceX Starship (V3), flown by real flight software (in this repo) that only sees simulated sensors, run as a LAN **mission control simulation**: `sim_server` streams to browser clients where people take console positions. Realism over fun: no scores, no shortcuts, no truth on the consoles. Portfolio project, so code quality, tests and documented assumptions matter. Owner: Taras Drozd (knows Python and Java best; this is C++20).
 
-Current status: a Starship V3 **Ship in hop configuration** (three sea-level Raptor 3s, estimated mass properties) lifts off, climbs to 50 m, diverts to Starbase Pad 2 using simulated GNSS (WGS-84) plus IMU, and lands on the pad center (placeholder for the catch point). Sensors: IMU, radar altimeter, GNSS, with wind. `sim_server` serves a three.js outside view over the truth stream. No consoles, sessions or telemetry downlink yet.
+Current status: a Starship V3 **Ship in hop configuration** (three sea-level Raptor 3s, estimated mass properties) lifts off, climbs to 50 m, diverts to Starbase Pad 2 using simulated GNSS (WGS-84) plus IMU, and lands on the pad center (placeholder for the catch point). Sensors: IMU, radar altimeter, GNSS, with wind. `sim_server` serves a three.js outside view over the truth stream (`/`) and the first console, GNC (`/gnc/`), fed only by CCSDS telemetry the flight computer downlinks through a placeholder comms model (`/ws/telemetry`). No sessions, roles, commanding or Yamcs/Open MCT yet.
 
 ## More context (read when relevant)
 
@@ -12,6 +12,7 @@ Current status: a Starship V3 **Ship in hop configuration** (three sea-level Rap
 | `docs/architecture.md` | Rate plan, planned runtime architecture (sessions, crew, Yamcs, Open MCT, streams), rendering and mission control plans |
 | `docs/vehicle_reference.md` | Starship V3 public facts |
 | `docs/protocol/*.md` | Versioned wire protocols (treat as contracts) |
+| `docs/telemetry/*.md` | Telemetry dictionary: CCSDS APIDs and packet layouts (seed of the XTCE database) |
 | `<dir>/CLAUDE.md` | Per-module rules: `flight_sw`, `sim_core`, `sim_vehicle`, `sim_server`, `web`, `tests`, `tools` |
 | `README.md` | Human-facing overview and run commands |
 

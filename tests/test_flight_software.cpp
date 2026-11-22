@@ -3,6 +3,8 @@
 #include "fsw/Pid.hpp"
 #include "fsw/VerticalEstimator.hpp"
 
+#include <vector>
+
 namespace {
 
 class TestHal final : public fsw::Hal {
@@ -12,7 +14,11 @@ public:
     fsw::AltimeterSample readAltimeter() override { return altimeter; }
     fsw::GnssSample readGnss() override { return gnss; }
     void commandActuators(const fsw::ActuatorCommand& value) override { command = value; }
+    fsw::GimbalFeedbackSample readGimbalFeedback() override { return gimbal; }
     void publishTelemetry(const fsw::Telemetry& value) override { telemetry = value; }
+    void downlink(const uint8_t* packet, std::size_t length) override {
+        packets.emplace_back(packet, packet + length);
+    }
 
     double time = 0.0;
     fsw::ImuSample imu;
@@ -20,6 +26,8 @@ public:
     fsw::GnssSample gnss;
     fsw::ActuatorCommand command;
     fsw::Telemetry telemetry;
+    fsw::GimbalFeedbackSample gimbal;
+    std::vector<std::vector<uint8_t>> packets;
 };
 
 }  // namespace
@@ -177,4 +185,30 @@ TEST_CASE(hop_flight_computer_counters_roll_rate_with_differential_gimbal) {
         torqueZ += std::cos(a) * ly - std::sin(a) * lx;
     }
     CHECK(torqueZ < 0.0);
+}
+
+TEST_CASE(hop_flight_computer_downlinks_all_periodic_packets_on_cycle_zero) {
+    TestHal hal;
+    hal.imu.valid = true;
+    hal.imu.specificForce[2] = 9.80665;
+    const fsw::HopConfig config = testConfig();
+    fsw::HopFlightComputer computer(hal, config);
+    hal.time = 0.01;
+    hal.imu.stamp = hal.time;
+    computer.tick();
+    // No GNSS solution yet: status, config, navigation, guidance, actuators.
+    std::vector<unsigned> apids;
+    for (const auto& p : hal.packets) {
+        apids.push_back((static_cast<unsigned>(p[0] & 0x07) << 8) | p[1]);
+    }
+    CHECK(apids.size() == 5);
+    CHECK(apids[0] == 0x100 && apids[1] == 0x101 && apids[2] == 0x110 && apids[3] == 0x120 && apids[4] == 0x130);
+
+    hal.packets.clear();
+    hal.time = 0.02;
+    hal.imu.stamp = hal.time;
+    feedGnssAtTarget(hal, config);
+    computer.tick();  // cycle 1: only the new GNSS solution
+    CHECK(hal.packets.size() == 1);
+    CHECK(hal.packets[0].size() == 68);
 }

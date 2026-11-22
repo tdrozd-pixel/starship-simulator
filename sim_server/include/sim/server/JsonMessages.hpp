@@ -17,6 +17,9 @@ struct HelloInfo {
 std::string makeHello(const HelloInfo& info);
 std::string makeRunStarted(uint32_t runId);
 
+// Hello of the /ws/telemetry stream (docs/protocol/telemetry_stream.md).
+std::string makeTelemetryHello(uint32_t runId, double timeScale);
+
 enum class ClientMsg { Unknown, Restart };
 
 // Minimal scan for the "type" string member; no JSON library.

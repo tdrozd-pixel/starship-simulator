@@ -146,6 +146,8 @@ void HopFlightComputer::tick() {
     const double dt = (lastTime_ < 0.0) ? 1.0 / config_.rateHz : t - lastTime_;
     lastTime_ = t;
 
+    gimbalFeedback_ = hal_.readGimbalFeedback();
+    gnssNew_ = false;
     updateNavigation(t, dt);
     updateModeLogic(t, dt);
 
@@ -177,10 +179,65 @@ void HopFlightComputer::tick() {
     tm.northAccelCommand = accelCommand_[1];
     tm.gnssFixType = gnssFixType_;
     hal_.publishTelemetry(tm);
+
+    downlinkTelemetry(t);
+    ++cycle_;
+}
+
+void HopFlightComputer::downlinkTelemetry(double t) {
+    GncTelemetryInput& in = downlinkInput_;
+    in.mode = static_cast<int>(mode_);
+    in.enginesOn = enginesOn_;
+    in.horizontalNavValid = horizontal_.initialized();
+    in.translating = translating_;
+    in.alignedOverTarget = alignedOverTarget();
+    in.gnssReady = gnssFixCount_ >= config_.gnssFixesRequired;
+    in.gnssFixCount = gnssFixCount_;
+    in.timeInMode = t - modeStartTime_;
+    in.propellantEstimate = propellantEstimate_;
+    in.massEstimate = massEstimate();
+
+    in.targetLatitude = config_.target.latitude;
+    in.targetLongitude = config_.target.longitude;
+    in.targetHeight = config_.target.height;
+    in.targetAltitude = config_.targetAltitude;
+    in.landingAlignTolerance = config_.landingAlignTolerance;
+    in.translateAltitude = config_.translateAltitude;
+
+    for (int i = 0; i < 4; ++i) {
+        in.attitude[i] = attitude_[i];
+    }
+    in.imu = lastImu_;
+    in.altitude = estimator_.altitude();
+    in.verticalVelocity = estimator_.velocity();
+    in.altimeter = lastAltimeter_;
+    in.east = horizontal_.east();
+    in.north = horizontal_.north();
+    in.velocityEast = horizontal_.velocityEast();
+    in.velocityNorth = horizontal_.velocityNorth();
+    in.accelBiasEast = horizontal_.accelBiasEast();
+    in.accelBiasNorth = horizontal_.accelBiasNorth();
+
+    in.altitudeSetpoint = altitudeSetpoint_;
+    in.velocitySetpoint = velocitySetpoint_;
+    in.eastSetpoint = horizontalTarget_[0];
+    in.northSetpoint = horizontalTarget_[1];
+    in.eastAccelCommand = accelCommand_[0];
+    in.northAccelCommand = accelCommand_[1];
+    for (int i = 0; i < 3; ++i) {
+        in.attitudeError[i] = attitudeError_[i];
+    }
+    in.command = command_;
+
+    in.gimbal = gimbalFeedback_;
+    in.gnss = lastGnss_;
+    in.gnssNew = gnssNew_;
+    downlink_.emit(hal_, in, cycle_, t);
 }
 
 void HopFlightComputer::updateNavigation(double t, double dt) {
     const ImuSample imu = hal_.readImu();
+    lastImu_ = imu;
     if (imu.valid && imu.stamp > lastImuStamp_) {
         const double imuDt = lastImuStamp_ < 0.0 ? dt : imu.stamp - lastImuStamp_;
         lastImuStamp_ = imu.stamp;
@@ -214,6 +271,7 @@ void HopFlightComputer::updateNavigation(double t, double dt) {
 
     // The altimeter looks along body -z from the base: slant range times cos(tilt).
     const AltimeterSample alt = hal_.readAltimeter();
+    lastAltimeter_ = alt;
     if (alt.valid && alt.stamp > lastAltimeterStamp_) {
         lastAltimeterStamp_ = alt.stamp;
         estimator_.correct(alt.range * std::max(0.0, upComponentOfBodyZ(q)), dt);
@@ -222,6 +280,8 @@ void HopFlightComputer::updateNavigation(double t, double dt) {
     const GnssSample gnss = hal_.readGnss();
     if (gnss.valid && gnss.stamp > lastGnssStamp_) {
         lastGnssStamp_ = gnss.stamp;
+        lastGnss_ = gnss;
+        gnssNew_ = true;
         gnssFixType_ = static_cast<int>(gnss.fixType);
         ++gnssFixCount_;
 
@@ -277,6 +337,7 @@ bool HopFlightComputer::alignedOverTarget() const {
 }
 
 void HopFlightComputer::updateTvc() {
+    attitudeError_[0] = attitudeError_[1] = attitudeError_[2] = 0.0;
     for (EngineCommand& e : command_.engines) {
         e.on = enginesOn_;
         e.throttle = enginesOn_ ? throttle_ : 0.0;
@@ -333,6 +394,9 @@ void HopFlightComputer::updateTvc() {
         attitudeFrom(attitude_)));
     double error[3];
     rotationVector(attitudeError, error);
+    for (int i = 0; i < 3; ++i) {
+        attitudeError_[i] = error[i];
+    }
 
     // Torque per unit gimbal from the mass properties we were given.
     const double propellantFraction =

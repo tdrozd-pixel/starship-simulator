@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <bit>
+#include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -14,6 +15,8 @@
 #include "sim/server/JsonMessages.hpp"
 #include "sim/server/SimRunner.hpp"
 #include "sim/server/SnapshotRing.hpp"
+#include "sim/server/TelemetryFrame.hpp"
+#include "sim/server/TelemetryRing.hpp"
 #include "sim/server/WireFormat.hpp"
 
 namespace {
@@ -272,7 +275,8 @@ bool isHalted(const TruthSnapshot& s) { return (s.flags & sim::vehicle::kSnapHal
 
 TEST_CASE(runner_restart_stamps_new_run) {
     SnapshotRing ring;
-    SimRunner runner(fastRunnerConfig(), ring);
+    TelemetryRing tring;
+    SimRunner runner(fastRunnerConfig(), ring, tring);
     runner.start();
     std::vector<TruthSnapshot> seen;
     CHECK(drainUntil(ring, seen, [](const TruthSnapshot& s) { return s.runId == 1 && s.step >= 100; }));
@@ -304,7 +308,8 @@ TEST_CASE(runner_stop_while_halted_is_prompt) {
     SnapshotRing ring;
     SimRunnerConfig config = fastRunnerConfig();
     config.timeScale = 100.0;
-    SimRunner runner(config, ring);
+    TelemetryRing tring;
+    SimRunner runner(config, ring, tring);
     runner.start();
     std::vector<TruthSnapshot> seen;
     CHECK(drainUntil(ring, seen, isHalted));
@@ -322,7 +327,8 @@ TEST_CASE(runner_waits_for_client_before_starting) {
     config.autostart = false;
     config.clientPresent = [&present] { return present.load(); };
     config.onWaitingForClient = [&waitingCalls] { ++waitingCalls; };
-    SimRunner runner(config, ring);
+    TelemetryRing tring;
+    SimRunner runner(config, ring, tring);
     runner.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     TruthSnapshot s;
@@ -340,7 +346,8 @@ TEST_CASE(runner_final_snapshot_survives_full_ring) {
     SnapshotRing ring;
     SimRunnerConfig config = fastRunnerConfig();
     config.timeScale = 100.0;
-    SimRunner runner(config, ring);
+    TelemetryRing tring;
+    SimRunner runner(config, ring, tring);
     runner.start();
     // Do not consume: the ring (2048) fills before the ~4000-snapshot run ends,
     // and the final halted snapshot has to wait for room instead of being lost.
@@ -350,5 +357,142 @@ TEST_CASE(runner_final_snapshot_survives_full_ring) {
     CHECK(runner.droppedSnapshots() > 0);
     runner.stop();
 }
+
+TEST_CASE(ground_frame_round_trip) {
+    TelemetryItem item;
+    item.runId = 0x01020304u;
+    item.groundTime = 12.5;
+    item.length = 10;
+    for (uint8_t i = 0; i < 10; ++i) {
+        item.bytes[i] = static_cast<uint8_t>(0xA0 + i);
+    }
+    item.bytes[0] = 0x09;  // version 0, type 0, sec hdr 1, APID high bits 001
+    item.bytes[1] = 0x20;  // APID 0x120 = 288
+    CHECK(packetApid(item.bytes) == 288);
+
+    uint8_t frame[kMaxGroundFrame] = {};
+    const std::size_t n = encodeGroundFrame(item, frame);
+    CHECK(n == kGroundHeaderSize + 10);
+    CHECK(frame[0] == 'S' && frame[1] == 'T' && frame[2] == 'L' && frame[3] == 'M');
+    CHECK(readLe(frame + 4, 2) == 1);
+    CHECK(readLe(frame + 6, 2) == 1);
+    CHECK(readLe(frame + 8, 4) == 0x01020304u);
+    CHECK(frame[8] == 0x04 && frame[11] == 0x01);
+    CHECK(readLe(frame + 12, 2) == 10);
+    CHECK(readLe(frame + 14, 2) == 0);
+    CHECK(std::bit_cast<double>(readLe(frame + 16, 8)) == 12.5);
+    CHECK(frame[24] == 0x09 && frame[33] == 0xA9);
+
+    TelemetryItem back;
+    CHECK(decodeGroundFrame(frame, n, back));
+    CHECK(back.runId == item.runId && back.length == 10 && back.groundTime == 12.5);
+    CHECK(back.bytes[5] == item.bytes[5]);
+
+    CHECK(!decodeGroundFrame(frame, n - 1, back));
+    CHECK(!decodeGroundFrame(frame, 10, back));
+    frame[0] = 'X';
+    CHECK(!decodeGroundFrame(frame, n, back));
+    frame[0] = 'S';
+    frame[4] = 2;
+    CHECK(!decodeGroundFrame(frame, n, back));
+
+    // Largest packet fits.
+    item.length = static_cast<uint16_t>(sim::vehicle::kMaxTelemetryPacket);
+    CHECK(encodeGroundFrame(item, frame) == kMaxGroundFrame);
+}
+
+TEST_CASE(telemetry_hello_content) {
+    const std::string hello = makeTelemetryHello(7, 0.5);
+    CHECK(hello.find("\"type\":\"hello\"") != std::string::npos);
+    CHECK(hello.find("\"stream\":\"telemetry\"") != std::string::npos);
+    CHECK(hello.find("\"protocol\":1") != std::string::npos);
+    CHECK(hello.find("\"runId\":7") != std::string::npos);
+    CHECK(hello.find("\"timeScale\":0.5") != std::string::npos);
+    CHECK(hello.find("\"fsw_status\":256") != std::string::npos);
+    CHECK(hello.find("\"mission_config\":257") != std::string::npos);
+    CHECK(hello.find("\"navigation\":272") != std::string::npos);
+    CHECK(hello.find("\"guidance_control\":288") != std::string::npos);
+    CHECK(hello.find("\"actuator_feedback\":304") != std::string::npos);
+    CHECK(hello.find("\"gnss\":320") != std::string::npos);
+}
+
+TEST_CASE(telemetry_ring_orders_and_is_bounded) {
+    TelemetryRing ring;
+    TelemetryItem item;
+    for (std::size_t i = 0; i < TelemetryRing::kCapacity; ++i) {
+        item.runId = static_cast<uint32_t>(i);
+        CHECK(ring.tryPush(item));
+    }
+    item.runId = 999999;
+    CHECK(!ring.tryPush(item));  // full: never overwrites, never blocks
+    TelemetryItem out;
+    for (std::size_t i = 0; i < TelemetryRing::kCapacity; ++i) {
+        CHECK(ring.tryPop(out));
+        CHECK(out.runId == i);
+    }
+    CHECK(!ring.tryPop(out));
+    CHECK(ring.tryPush(item));
+}
+
+TEST_CASE(runner_delivers_telemetry_with_run_id) {
+    SnapshotRing ring;
+    TelemetryRing tring;
+    SimRunner runner(fastRunnerConfig(), ring, tring);
+    runner.start();
+
+    std::vector<TelemetryItem> seen;
+    std::vector<TruthSnapshot> snaps;
+    auto drainTelemetry = [&](uint32_t run, std::size_t count) {
+        const auto deadline = Clock::now() + std::chrono::seconds(30);
+        TelemetryItem t;
+        TruthSnapshot s;
+        while (Clock::now() < deadline) {
+            while (ring.tryPop(s)) {  // keep the truth ring from filling
+            }
+            if (tring.tryPop(t)) {
+                seen.push_back(t);
+                std::size_t n = 0;
+                for (const TelemetryItem& x : seen) {
+                    n += x.runId == run ? 1 : 0;
+                }
+                if (n >= count) {
+                    return true;
+                }
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        return false;
+    };
+    CHECK(drainTelemetry(1, 200));
+    runner.requestRestart();
+    CHECK(drainTelemetry(2, 50));
+    runner.stop();
+
+    std::bitset<512> apids;
+    bool sawNew = false;
+    bool oldAfterNew = false;
+    for (const TelemetryItem& t : seen) {
+        CHECK(t.runId == 1 || t.runId == 2);
+        CHECK(t.length >= kMinCcsdsPacket && t.length <= sim::vehicle::kMaxTelemetryPacket);
+        CHECK(t.groundTime >= 0.0);
+        const uint16_t apid = packetApid(t.bytes);
+        if (t.runId == 1 && apid >= 256 && apid < 512) {
+            apids.set(apid);
+        }
+        if (t.runId == 2) {
+            sawNew = true;
+        } else if (sawNew) {
+            oldAfterNew = true;
+        }
+    }
+    CHECK(sawNew);
+    CHECK(!oldAfterNew);
+    for (const std::size_t apid : {256u, 257u, 272u, 288u, 304u, 320u}) {
+        CHECK(apids.test(apid));
+    }
+    CHECK(runner.droppedTelemetry() == 0);
+}
+
 
 #endif  // SIM_HAVE_SERVER

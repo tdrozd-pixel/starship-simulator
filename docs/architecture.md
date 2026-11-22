@@ -25,6 +25,8 @@ Heavy physics is precomputed offline into tables: aero coefficients (CFD with Op
 
 ## Runtime architecture (planned)
 
+Built so far (interim): the flight computer downlinks CCSDS packets through a placeholder link model, `sim_server` forwards them on `/ws/telemetry` (`docs/protocol/telemetry_stream.md`), and a GNC console at `/gnc/` decodes them directly. When Yamcs arrives, the vehicle side and the packet dictionary (`docs/telemetry/gnc_packets.md`) stay; Yamcs takes over from the WebSocket forwarding.
+
 Flight controllers at consoles watch live telemetry and make real-time decisions, with visuals alongside. One machine runs the server; everyone else joins from a browser on the same local network. The sim is the authority and everything else is a client.
 
 ```

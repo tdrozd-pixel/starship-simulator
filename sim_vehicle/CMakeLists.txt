@@ -1,6 +1,7 @@
 add_library(sim_vehicle STATIC
     src/HopperDynamics.cpp
     src/Sensors.cpp
+    src/Downlink.cpp
     src/FlightSoftwareModel.cpp
     src/TelemetryLogger.cpp
     src/TruthSnapshotPublisher.cpp

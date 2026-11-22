@@ -7,6 +7,7 @@ namespace sim::vehicle {
 
 HopScenario buildHopScenario(const HopScenarioOptions& options) {
     HopScenario scenario;
+    scenario.downlinkQueue = std::make_unique<DownlinkQueue>();
     scenario.sim = std::make_unique<Simulation>(SimConfig{1000.0, options.seed});
     Simulation& sim = *scenario.sim;
 
@@ -26,10 +27,12 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     imuSpec.ideal = imuSpec.ideal || options.idealSensors;
     AltimeterSpec altSpec = options.altimeter;
     altSpec.ideal = altSpec.ideal || options.idealSensors;
+    GimbalFeedbackSpec gimbalSpec = options.gimbalFeedback;
+    gimbalSpec.ideal = gimbalSpec.ideal || options.idealSensors;
     GnssSpec gnssSpec = options.gnss;
     gnssSpec.ideal = gnssSpec.ideal || options.idealSensors;
 
-    // Order matters: sensors, then flight software, then logging.
+    // Order matters: sensors, then flight software, then the downlink, then logging.
     sim.scheduler().emplace<ImuModel>("imu", options.imuRateHz, vehicle, imuSpec,
                                       deriveSeed(options.seed, "imu"));
     sim.scheduler().emplace<RadarAltimeterModel>("radar_altimeter", options.altimeterRateHz, vehicle, altSpec,
@@ -37,7 +40,10 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     const HopperParams& v = options.vehicle;
     const Eigen::Vector3d antenna(v.gnssAntennaPosition[0], v.gnssAntennaPosition[1], v.gnssAntennaPosition[2]);
     sim.scheduler().emplace<GnssModel>("gnss", options.gnssModelRateHz, vehicle, *scenario.site, antenna, gnssSpec,
-                                       deriveSeed(options.seed, "gnss"));
+                                       deriveSeed(options.seed, "gnss"),
+                                       deriveSeed(options.seed, "gnss_constellation"));
+    sim.scheduler().emplace<GimbalFeedbackModel>("gimbal_feedback", options.gimbalFeedbackRateHz, vehicle, gimbalSpec,
+                                                 deriveSeed(options.seed, "gimbal_feedback"));
 
     // What the flight software is told about the vehicle and the mission (loaded
     // before flight, like a real mass properties table and target coordinates).
@@ -64,6 +70,12 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     // The IMU model sits at the CG (TODO(phase 6, item 30): its own mounting point).
     hop.imuPosition[2] = mp.cgHeight;
     scenario.fsw = &sim.scheduler().emplace<FlightSoftwareModel>("flight_software", hop);
+    scenario.fsw->setDownlinkQueue(scenario.downlinkQueue.get());
+    if (options.telemetrySink != nullptr) {
+        scenario.downlink = &sim.scheduler().emplace<DownlinkModel>(
+            "downlink", options.downlinkRateHz, *scenario.downlinkQueue, *options.telemetrySink, options.downlink,
+            deriveSeed(options.seed, "downlink"));
+    }
 
     if (!options.logPath.empty()) {
         sim.scheduler().emplace<TelemetryLogger>("telemetry_logger", options.logRateHz, vehicle, options.logPath);

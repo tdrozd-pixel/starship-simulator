@@ -3,9 +3,9 @@
 Flight software: navigation, guidance, control, sequencing (build order items 43 to 47). Namespace `fsw`.
 
 - **Depends on nothing else in the repo, not even Eigen.** It must build for a real flight computer against a real HAL. Standard library only.
-- `Hal.hpp` is the only way to touch the world (`timeSec`, `readImu`, `readAltimeter`, `readGnss`, `commandActuators` per engine, `publishTelemetry`). Never read truth; if you need data, add a sensor and a HAL call. `sim_vehicle/SimHal` implements it over the bus.
+- `Hal.hpp` is the only way to touch the world (`timeSec`, `readImu`, `readAltimeter`, `readGnss`, `readGimbalFeedback`, `commandActuators` per engine, `publishTelemetry`, `downlink`). Never read truth; if you need data, add a sensor and a HAL call. `sim_vehicle/SimHal` implements it over the bus.
 - Runs at 100 Hz in lockstep with the sim. No allocation in `step()`/update paths; no clocks, threads or I/O.
-- Contents: `Pid`, `VerticalEstimator` (complementary filter), `HorizontalEstimator` (GNSS + IMU Kalman filter per axis), `Geodesy` (WGS-84, independent of the sim copy), `HopFlightComputer` (hop modes, divert guidance, cascade control, per-engine TVC with roll).
+- Contents: `Pid`, `VerticalEstimator` (complementary filter), `HorizontalEstimator` (GNSS + IMU Kalman filter per axis), `Geodesy` (WGS-84, independent of the sim copy), `HopFlightComputer` (hop modes, divert guidance, cascade control, per-engine TVC with roll), `Ccsds` (Space Packet header, CUC time), `GncTelemetry` (builds the downlinked packets per `docs/telemetry/gnc_packets.md`; reads state only, never changes control).
 
 ## Lessons learned
 

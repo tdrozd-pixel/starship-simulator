@@ -118,6 +118,16 @@ std::string makeRunStarted(uint32_t runId) {
     return "{\"type\":\"run_started\",\"runId\":" + std::to_string(runId) + "}";
 }
 
+std::string makeTelemetryHello(uint32_t runId, double timeScale) {
+    std::string out = "{\"type\":\"hello\",\"stream\":\"telemetry\",\"protocol\":1,\"runId\":";
+    out += std::to_string(runId);
+    out += ",\"timeScale\":";
+    out += number(timeScale);
+    out += ",\"apids\":{\"fsw_status\":256,\"mission_config\":257,\"navigation\":272,"
+           "\"guidance_control\":288,\"actuator_feedback\":304,\"gnss\":320}}";
+    return out;
+}
+
 // Walks the keys of the top-level object only; "type" inside nested values or
 // string contents never matches.
 ClientMsg parseClientMessage(std::string_view text) {

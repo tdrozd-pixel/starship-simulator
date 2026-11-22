@@ -78,8 +78,14 @@ void RadarAltimeterModel::update(const StepContext& ctx) {
 
 GnssModel::GnssModel(std::string name, double rateHz, const HopperDynamics& truth,
                      const env::LocalTangentFrame& site, const Eigen::Vector3d& antennaFromBase, GnssSpec spec,
-                     uint64_t seed)
-    : Model(std::move(name), rateHz), truth_(truth), site_(site), antenna_(antennaFromBase), spec_(spec), rng_(seed) {
+                     uint64_t seed, uint64_t constellationSeed)
+    : Model(std::move(name), rateHz),
+      truth_(truth),
+      site_(site),
+      antenna_(antennaFromBase),
+      spec_(spec),
+      rng_(seed),
+      constellationRng_(constellationSeed) {
     const double ratio = rateHz / spec_.outputRateHz;
     stepsPerOutput_ = static_cast<int>(std::lround(ratio));
     if (stepsPerOutput_ < 1 || std::abs(ratio - stepsPerOutput_) > 1e-9) {
@@ -98,6 +104,14 @@ void GnssModel::initialize(Bus& bus) { out_ = &bus.channel<GnssMsg>(channels::kG
 double GnssModel::gaussMarkovStep(double value, double sigma, double period) {
     const double phi = std::exp(-period / spec_.biasTimeConstant);
     return phi * value + sigma * std::sqrt(1.0 - phi * phi) * rng_.normal();
+}
+
+void GnssModel::stepConstellation() {
+    // Placeholder: about every 20 s (0.5% of the 10 Hz solutions) the count moves by one.
+    if (constellationRng_.uniform() < 0.005) {
+        satellitesVisible_ += constellationRng_.uniform() < 0.5 ? -1 : 1;
+        satellitesVisible_ = std::clamp(satellitesVisible_, 16, 32);
+    }
 }
 
 void GnssModel::update(const StepContext& ctx) {
@@ -121,6 +135,9 @@ void GnssModel::update(const StepContext& ctx) {
     fix.fixTime = ctx.t;
     fix.horizontalSigma = spec_.reportedHorizontalSigma;
     fix.verticalSigma = spec_.reportedVerticalSigma;
+    stepConstellation();
+    fix.satellitesVisible = satellitesVisible_;
+    fix.satellitesUsed = satellitesVisible_ - static_cast<int>(constellationRng_.uniform() * 3.0);  // 0..2 unused
 
     if (!spec_.ideal) {
         const double period = 1.0 / spec_.outputRateHz;
@@ -134,6 +151,7 @@ void GnssModel::update(const StepContext& ctx) {
         if (spec_.dropoutProbability > 0.0 && rng_.uniform() < spec_.dropoutProbability) {
             fix.valid = false;
             fix.fixType = 0;
+            fix.satellitesUsed = 0;
         }
     }
 
@@ -151,6 +169,44 @@ void GnssModel::update(const StepContext& ctx) {
     fix.height = quantize(g.height, 1.0e-3);  // [m] output resolution
     pendingFix_ = fix;
     pending_ = true;
+}
+
+GimbalFeedbackModel::GimbalFeedbackModel(std::string name, double rateHz, const HopperDynamics& truth,
+                                         GimbalFeedbackSpec spec, uint64_t seed)
+    : Model(std::move(name), rateHz), truth_(truth), spec_(spec), rng_(seed) {
+    bias_.setZero();
+    if (!spec_.ideal) {
+        for (int i = 0; i < kEngineCount; ++i) {
+            bias_(0, i) = rng_.normal(0.0, spec_.biasSigma);
+            bias_(1, i) = rng_.normal(0.0, spec_.biasSigma);
+        }
+    }
+}
+
+void GimbalFeedbackModel::initialize(Bus& bus) { out_ = &bus.channel<GimbalFeedbackMsg>(channels::kGimbalFeedback); }
+
+void GimbalFeedbackModel::update(const StepContext& ctx) {
+    GimbalFeedbackMsg now;
+    const EngineGimbals& actual = truth_.state().gimbal;  // actual positions, never commands
+    for (int i = 0; i < kEngineCount; ++i) {
+        now.valid[i] = true;
+        double pitch = actual(0, i);
+        double yaw = actual(1, i);
+        if (!spec_.ideal) {
+            pitch = quantize(pitch + bias_(0, i) + rng_.normal(0.0, spec_.noiseSigma), spec_.quantum);
+            yaw = quantize(yaw + bias_(1, i) + rng_.normal(0.0, spec_.noiseSigma), spec_.quantum);
+        }
+        now.pitch[i] = pitch;
+        now.yaw[i] = yaw;
+    }
+    if (spec_.ideal) {
+        out_->publish(now, ctx.t);
+        return;
+    }
+    // One sample of latency: publish what was measured on the previous update.
+    out_->publish(havePrevious_ ? previous_ : now, ctx.t);
+    previous_ = now;
+    havePrevious_ = true;
 }
 
 }  // namespace sim::vehicle

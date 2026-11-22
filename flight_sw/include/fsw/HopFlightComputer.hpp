@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
+
 #include "fsw/Geodesy.hpp"
+#include "fsw/GncTelemetry.hpp"
 #include "fsw/Hal.hpp"
 #include "fsw/HorizontalEstimator.hpp"
 #include "fsw/Pid.hpp"
@@ -25,9 +28,9 @@ struct HopConfig {
     int gnssFixesRequired = 10;       // valid fixes before ignition is allowed
     double targetAltitude = 50.0;     // [m]
     double ascentRate = 5.0;          // [m/s] setpoint ramp
-    double hoverDuration = 5.0;       // [s] minimum
-    double descentRate = 3.0;         // [m/s] setpoint ramp
-    double finalDescentAltitude = 5.0;  // [m] switch to constant-rate descent
+    double hoverDuration = 1.0;       // [s] minimum
+    double descentRate = 10.0;         // [m/s] setpoint ramp
+    double finalDescentAltitude = 2.0;  // [m] switch to constant-rate descent
     double finalDescentRate = 1.0;    // [m/s]
     double liftoffAltitude = 0.3;     // [m] estimate above this counts as liftoff
     double ignitionThrustToWeight = 1.15;  // held until liftoff
@@ -43,8 +46,8 @@ struct HopConfig {
     // Landing target (mission data loaded before flight).
     GeodeticPosition target;
     double translateAltitude = 20.0;     // [m] hold over the liftoff point below this
-    double landingAlignTolerance = 0.3;  // [m] horizontal error allowed before descent
-    double landingAlignSpeed = 0.2;      // [m/s] horizontal speed allowed before descent
+    double landingAlignTolerance = 1;  // [m] horizontal error allowed before descent
+    double landingAlignSpeed = 1;      // [m/s] horizontal speed allowed before descent
 
     // Vehicle knowledge the flight software is given (not read from the sim).
     double dryMass = 0.0;            // [kg]
@@ -124,6 +127,7 @@ private:
     double throttleForThrust(double totalThrust) const;
     double minimumTotalThrust() const;
     double massEstimate() const;
+    void downlinkTelemetry(double t);
     double maxClimbRateToStopWithin(double distance) const;
     bool alignedOverTarget() const;
 
@@ -155,6 +159,17 @@ private:
     bool enginesOn_ = false;
     double throttle_ = 0.0;
     ActuatorCommand command_;
+
+    // Downlink state (read only by telemetry; control never looks at it).
+    GncTelemetry downlink_;
+    GncTelemetryInput downlinkInput_;
+    uint32_t cycle_ = 0;
+    double attitudeError_[3] = {};  // [rad] body, zero when not computed
+    ImuSample lastImu_;
+    AltimeterSample lastAltimeter_;
+    GimbalFeedbackSample gimbalFeedback_;
+    GnssSample lastGnss_;  // latest accepted solution
+    bool gnssNew_ = false;
 };
 
 }  // namespace fsw
