@@ -55,9 +55,45 @@ double firstOrderRate(double current, double target, double timeConstant, double
 
 }  // namespace
 
+HopperMassProperties hopperMassProperties(const HopperParams& p) {
+    HopperMassProperties m;
+    m.cgHeight = p.cgHeight();
+    const double r2 = p.radius * p.radius;
+
+    // Dry: thin cylindrical shell of the full length, centered at the dry CG.
+    const double dryOffset = p.dryCgHeight - m.cgHeight;
+    m.transverseInertiaDry =
+        p.dryMass * (0.5 * r2 + p.length * p.length / 12.0) + p.dryMass * dryOffset * dryOffset;
+    m.axialInertiaDry = p.dryMass * r2;
+
+    // Propellant: solid column (rotates with the tank wall; no slosh yet, item 13).
+    const double propOffset = p.propellantCgHeight - m.cgHeight;
+    const double lp = p.propellantColumnLength;
+    m.transverseInertiaPropellant =
+        p.initialPropellant * (3.0 * r2 + lp * lp) / 12.0 + p.initialPropellant * propOffset * propOffset;
+    m.axialInertiaPropellant = 0.5 * p.initialPropellant * r2;
+    return m;
+}
+
+HopperState HopperDynamics::stateOnPad(const HopperParams& params, const Eigen::Vector3d& baseEnu,
+                                       const Eigen::Quaterniond& attitude) {
+    HopperState s;
+    s.attitude = attitude;
+    s.propellantMass = params.initialPropellant;
+    s.position = baseEnu + attitude * Eigen::Vector3d(0.0, 0.0, params.cgHeight());
+    return s;
+}
+
 HopperDynamics::HopperDynamics(const HopperParams& params, const HopperState& initial)
-    : params_(params), x_(initial) {
-    onGround_ = x_.position.z() <= 0.0;
+    : params_(params), massProperties_(hopperMassProperties(params)), x_(initial) {
+    const double gimbalZ = params_.gimbalHeight - massProperties_.cgHeight;
+    for (int i = 0; i < kEngineCount; ++i) {
+        const double azimuth = params_.engineAzimuth0 + 2.0 * std::numbers::pi * i / kEngineCount;
+        enginePositions_.col(i) = Eigen::Vector3d(params_.engineClusterRadius * std::cos(azimuth),
+                                                  params_.engineClusterRadius * std::sin(azimuth), gimbalZ);
+    }
+    onGround_ = baseHeightOf(x_) <= 1e-9;
+    maxAltitude_ = std::max(0.0, baseHeightOf(x_));
 }
 
 void HopperDynamics::initialize(Bus& bus) {
@@ -66,13 +102,35 @@ void HopperDynamics::initialize(Bus& bus) {
     weatherConditionsChannel_ = &bus.channel<env::WeatherConditions>("weather_conditions");
 }
 
-Eigen::Matrix3d HopperDynamics::inertia(double mass) const {
-    // Placeholder: solid cylinder scaled by current mass.
-    // TODO(phase 1, item 8): build from component masses and live tank fill levels.
-    const double r2 = params_.radius * params_.radius;
-    const double l2 = params_.length * params_.length;
-    const double transverse = mass * (3.0 * r2 + l2) / 12.0;
-    const double axial = 0.5 * mass * r2;
+bool HopperDynamics::engineRunning() const {
+    for (bool running : engineRunning_) {
+        if (running) {
+            return true;
+        }
+    }
+    return false;
+}
+
+double HopperDynamics::baseHeightOf(const HopperState& x) const {
+    return (x.position + x.attitude * Eigen::Vector3d(0.0, 0.0, -massProperties_.cgHeight)).z();
+}
+
+Eigen::Vector3d HopperDynamics::pointWorld(const Eigen::Vector3d& bodyFromBase) const {
+    const Eigen::Vector3d fromCg = bodyFromBase - Eigen::Vector3d(0.0, 0.0, massProperties_.cgHeight);
+    return x_.position + x_.attitude * fromCg;
+}
+
+Eigen::Vector3d HopperDynamics::pointVelocityWorld(const Eigen::Vector3d& bodyFromBase) const {
+    const Eigen::Vector3d fromCg = bodyFromBase - Eigen::Vector3d(0.0, 0.0, massProperties_.cgHeight);
+    return x_.velocity + x_.attitude * x_.angularRate.cross(fromCg);
+}
+
+Eigen::Matrix3d HopperDynamics::inertia(double propellantMass) const {
+    const double fraction =
+        params_.initialPropellant > 0.0 ? std::max(0.0, propellantMass) / params_.initialPropellant : 0.0;
+    const double transverse =
+        massProperties_.transverseInertiaDry + fraction * massProperties_.transverseInertiaPropellant;
+    const double axial = massProperties_.axialInertiaDry + fraction * massProperties_.axialInertiaPropellant;
     return Eigen::Vector3d(transverse, transverse, axial).asDiagonal();
 }
 
@@ -80,28 +138,48 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
     HopperDeriv d;
     const double mass = params_.dryMass + std::max(0.0, x.propellantMass);
     const Eigen::Matrix3d R = x.attitude.toRotationMatrix();
+    const env::AtmosphereSample air = atmosphere_.at(std::max(0.0, baseHeightOf(x)));
 
-    // Thrust (body frame), engine at the gimbal point below the CG
-    const bool thrusting = engineRunning_ && x.propellantMass > 0.0;
-    const double thrust = thrusting ? std::max(0.0, x.throttle) * params_.maxThrust : 0.0;
-    const double pitch = x.gimbal.x();
-    const double yaw = x.gimbal.y();
-    const Eigen::Vector3d thrustDir(std::cos(pitch) * std::sin(yaw), -std::sin(pitch), std::cos(pitch) * std::cos(yaw));
-    const Eigen::Vector3d thrustBody = thrust * thrustDir;
-    const Eigen::Vector3d engineArm(0.0, 0.0, -params_.engineLeverArm);
-    Eigen::Vector3d torqueBody = engineArm.cross(thrustBody);
+    // Thrust: per engine F = throttle * F_vac - p_amb * A_exit, applied at the gimbal point.
+    const double vacuumThrust = params_.vacuumThrust();
+    const double pressureLoss = air.pressure * params_.nozzleExitArea();
+    const bool havePropellant = x.propellantMass > 0.0;
+    Eigen::Vector3d forceBody = Eigen::Vector3d::Zero();
+    Eigen::Vector3d torqueBody = Eigen::Vector3d::Zero();
+    double massFlow = 0.0;
+    for (int i = 0; i < kEngineCount; ++i) {
+        if (!engineRunning_[i] || !havePropellant) {
+            continue;
+        }
+        const double throttle = std::max(0.0, x.throttle[i]);
+        const double thrust = std::max(0.0, throttle * vacuumThrust - pressureLoss);
+        const double pitch = x.gimbal(0, i);
+        const double yaw = x.gimbal(1, i);
+        const Eigen::Vector3d dir(std::cos(pitch) * std::sin(yaw), -std::sin(pitch), std::cos(pitch) * std::cos(yaw));
+        const Eigen::Vector3d f = thrust * dir;
+        forceBody += f;
+        torqueBody += enginePositions_.col(i).cross(f);
+        massFlow += throttle * vacuumThrust / (params_.vacuumIsp * env::kStandardGravity);
+    }
 
-    // Drag (placeholder): opposes velocity, constant Cd on the cross-section
-    const env::AtmosphereSample air = atmosphere_.at(std::max(0.0, x.position.z()));
-    const double area = std::numbers::pi * params_.radius * params_.radius;
-    const Eigen::Vector3d airVelocity = x.velocity - weather_.wind;
-    const double speed = airVelocity.norm();
-    const Eigen::Vector3d drag = -0.5 * air.density * params_.dragCoefficient * area * speed * airVelocity;
+    // Aerodynamics (placeholder for item 17): axial drag on the base area plus
+    // cross-flow drag on the side area, acting at the center of pressure.
+    const Eigen::Vector3d airVelocityBody = R.transpose() * (x.velocity - weather_.wind);
+    const double axialSpeed = airVelocityBody.z();
+    const Eigen::Vector3d crossflow(airVelocityBody.x(), airVelocityBody.y(), 0.0);
+    const double baseArea = std::numbers::pi * params_.radius * params_.radius;
+    const double sideArea = 2.0 * params_.radius * params_.length;
+    const Eigen::Vector3d aeroBody =
+        Eigen::Vector3d(0.0, 0.0, -0.5 * air.density * params_.axialDragCoefficient * baseArea * std::abs(axialSpeed) * axialSpeed) -
+        0.5 * air.density * params_.crossflowDragCoefficient * sideArea * crossflow.norm() * crossflow;
+    const Eigen::Vector3d cpFromCg(0.0, 0.0, params_.centerOfPressureHeight - massProperties_.cgHeight);
+    forceBody += aeroBody;
+    torqueBody += cpFromCg.cross(aeroBody);
 
-    Eigen::Vector3d forceWorld = R * thrustBody + mass * gravity_.acceleration(x.position) + drag;
+    Eigen::Vector3d forceWorld = R * forceBody + mass * gravity_.acceleration(x.position);
 
     // Ground contact: the pad pushes back and holds the vehicle still.
-    // TODO(phase 7): real leg contact as spring-dampers.
+    // TODO(phase 7, item 40): real contact (legs or catch arms) as spring-dampers.
     if (onGround_) {
         forceWorld.x() = 0.0;
         forceWorld.y() = 0.0;
@@ -112,23 +190,27 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
     d.positionDot = x.velocity;
     d.velocityDot = forceWorld / mass;
 
-    const Eigen::Matrix3d I = inertia(mass);
+    const Eigen::Matrix3d I = inertia(x.propellantMass);
     const Eigen::Vector3d& w = x.angularRate;
     d.angularRateDot = I.ldlt().solve(torqueBody - w.cross(I * w));
 
     const Eigen::Quaterniond omega(0.0, w.x(), w.y(), w.z());
     d.attitudeDot = 0.5 * (x.attitude * omega).coeffs();
 
-    d.propellantMassDot = thrusting ? -thrust / (params_.ispSeaLevel * env::kStandardGravity) : 0.0;
+    d.propellantMassDot = -massFlow;
 
-    // Actuators: first-order response with rate limits
-    const double throttleTarget = engineRunning_ ? std::clamp(u.throttle, params_.minThrottle, 1.0) : 0.0;
-    d.throttleDot = firstOrderRate(x.throttle, throttleTarget, params_.throttleTimeConstant, params_.throttleRateLimit);
-
-    const Eigen::Vector2d gimbalTarget(std::clamp(u.gimbalPitch, -params_.gimbalLimit, params_.gimbalLimit),
-                                       std::clamp(u.gimbalYaw, -params_.gimbalLimit, params_.gimbalLimit));
-    for (int i = 0; i < 2; ++i) {
-        d.gimbalDot[i] = firstOrderRate(x.gimbal[i], gimbalTarget[i], params_.gimbalTimeConstant, params_.gimbalRateLimit);
+    // Actuators: first-order response with rate limits, per engine.
+    for (int i = 0; i < kEngineCount; ++i) {
+        const EngineCommandMsg& c = u.engines[i];
+        const double throttleTarget = engineRunning_[i] ? std::clamp(c.throttle, params_.minThrottle, 1.0) : 0.0;
+        d.throttleDot[i] =
+            firstOrderRate(x.throttle[i], throttleTarget, params_.throttleTimeConstant, params_.throttleRateLimit);
+        const double targets[2] = {std::clamp(c.gimbalPitch, -params_.gimbalLimit, params_.gimbalLimit),
+                                   std::clamp(c.gimbalYaw, -params_.gimbalLimit, params_.gimbalLimit)};
+        for (int axis = 0; axis < 2; ++axis) {
+            d.gimbalDot(axis, i) = firstOrderRate(x.gimbal(axis, i), targets[axis], params_.gimbalTimeConstant,
+                                                  params_.gimbalRateLimit);
+        }
     }
     return d;
 }
@@ -140,23 +222,25 @@ void HopperDynamics::prepare(double t) {
             ? weatherChannel_->latest().data.wind
             : Eigen::Vector3d::Zero();
     weatherConditionsChannel_->publish(
-        env::WeatherConditions{std::max(0.0, x_.position.z()), (x_.velocity - ambientWind).norm()}, t);
+        env::WeatherConditions{std::max(0.0, baseHeightOf(x_)), (x_.velocity - ambientWind).norm()}, t);
 
     if (commandChannel_ != nullptr && commandChannel_->latest().valid()) {
         command_ = commandChannel_->latest().data;
     }
 
-    // Engine start/stop sequencing (placeholder for the full Raptor start sequence)
-    if (!command_.engineOn || x_.propellantMass <= 0.0) {
-        engineRunning_ = false;
-        ignitionPending_ = false;
-    } else if (!engineRunning_ && !ignitionPending_) {
-        ignitionPending_ = true;
-        ignitionAt_ = t + params_.ignitionDelay;
-    }
-    if (ignitionPending_ && t >= ignitionAt_) {
-        ignitionPending_ = false;
-        engineRunning_ = true;
+    // Engine start/stop sequencing (placeholder for the Raptor start sequence, item 9).
+    for (int i = 0; i < kEngineCount; ++i) {
+        if (!command_.engines[i].on || x_.propellantMass <= 0.0) {
+            engineRunning_[i] = false;
+            ignitionPending_[i] = false;
+        } else if (!engineRunning_[i] && !ignitionPending_[i]) {
+            ignitionPending_[i] = true;
+            ignitionAt_[i] = t + params_.ignitionDelay;
+        }
+        if (ignitionPending_[i] && t >= ignitionAt_[i]) {
+            ignitionPending_[i] = false;
+            engineRunning_[i] = true;
+        }
     }
 
     lastDeriv_ = derivatives(x_, command_);
@@ -180,33 +264,37 @@ void HopperDynamics::integrate(double t, double dt) {
 
     x_ = rk4Step(x_, t, dt, [this](const HopperState& s, double) { return derivatives(s, command_); });
     x_.propellantMass = std::max(0.0, x_.propellantMass);
-    x_.throttle = std::max(0.0, x_.throttle);
+    x_.throttle = x_.throttle.cwiseMax(0.0);
 
     applyGroundContact(t + dt);
-    maxAltitude_ = std::max(maxAltitude_, x_.position.z());
+    maxAltitude_ = std::max(maxAltitude_, baseHeightOf(x_));
 
-    if (touchdown_.occurred && !engineRunning_ && (t + dt) - touchdown_.time > 2.0) {
+    if (touchdown_.occurred && !engineRunning() && (t + dt) - touchdown_.time > 2.0) {
         halted_ = true;
     }
 }
 
 void HopperDynamics::applyGroundContact(double t) {
-    if (x_.position.z() > 0.01) {
+    const double baseHeight = baseHeightOf(x_);
+    if (baseHeight > 0.01) {
         onGround_ = false;
-        if (x_.position.z() > 0.5) {
+        if (baseHeight > 0.5) {
             hasFlown_ = true;
         }
         return;
     }
-    if (x_.position.z() <= 0.0) {
+    if (baseHeight <= 0.0) {
         if (!onGround_ && hasFlown_ && !touchdown_.occurred) {
+            const Eigen::Vector3d base = basePosition();
             touchdown_.occurred = true;
             touchdown_.time = t;
             touchdown_.verticalSpeed = -x_.velocity.z();
             touchdown_.horizontalSpeed = x_.velocity.head<2>().norm();
+            touchdown_.east = base.x();
+            touchdown_.north = base.y();
         }
         onGround_ = true;
-        x_.position.z() = 0.0;
+        x_.position.z() -= baseHeight;
         x_.velocity.setZero();
         x_.angularRate.setZero();
     }

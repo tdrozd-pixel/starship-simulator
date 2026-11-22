@@ -39,6 +39,20 @@
     </div>
     <div id="waiting">waiting for data</div>
   </div>
+  <div class="panel" id="recorder">
+    <button id="btn-rec" title="">Record</button>
+    <select id="rec-res" aria-label="Recording resolution">
+      <option value="1280x720">720p</option>
+      <option value="1920x1080" selected>1080p</option>
+      <option value="2560x1440">1440p</option>
+    </select>
+    <select id="rec-fps" aria-label="Recording frame rate">
+      <option value="30">30 fps</option>
+      <option value="60" selected>60 fps</option>
+    </select>
+    <label><input type="checkbox" id="rec-hud" checked> HUD</label>
+    <span id="rec-status"></span>
+  </div>
   <div id="buttons">
     <button id="btn-restart" disabled>Restart</button>
     <button id="btn-reset">Reset view (R)</button>

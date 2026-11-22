@@ -2,7 +2,7 @@
 
 The truth stream carries simulated **truth** (not telemetry) from `sim_server` to visual clients: the outside view and the webcast HUD. Consoles never subscribe to it (see "Runtime architecture" in the top-level CLAUDE.md).
 
-Status: version 1, used by the vertical hop scenario (placeholder test hopper).
+Status: version 1, used by the hop scenario (Starship V3 Ship in hop configuration, three sea-level Raptors).
 
 ## Transport
 
@@ -16,8 +16,8 @@ Status: version 1, used by the vertical hop scenario (placeholder test hopper).
 
 SI units, radians.
 
-- World frame: flat local ENU, z up, origin at the pad center (placeholder until WGS-84 / site frames, phase 0 item 2).
-- Body frame: +z along the vehicle axis toward the nose. Origin at the vehicle base on the centerline (z = 0 when standing on the pad).
+- World frame: flat local ENU, z up, origin at the landing target (Starbase Pad 2 center, the placeholder for the catch point). It is the tangent plane at the target's WGS-84 coordinates (`LaunchSite` in `sim_vehicle/include/sim/vehicle/HopperParams.hpp`); the vehicle lifts off from a point offset from the origin.
+- Body frame: +z along the vehicle axis toward the nose. `position` and `velocity` are the vehicle base on the centerline (z = 0 when standing on the pad), not the center of mass.
 - Attitude quaternion rotates body vectors into the world frame.
 - Conversion from these frames to the renderer's convention (three.js is Y-up) happens in exactly one module in `web/`.
 
@@ -46,15 +46,21 @@ Little-endian. Fixed size **176 bytes**. Every `f64` sits at a multiple of 8.
 | 56 | f64[3] | velocity x, y, z | world [m/s] |
 | 80 | f64[4] | attitude w, x, y, z | unit quaternion, body to world |
 | 112 | f64[3] | angularRate x, y, z | body [rad/s] |
-| 136 | f64 | throttle | **actual** throttle actuator position, fraction of max thrust. It can be nonzero while the engine is off (the actuator has not returned to 0); thrust is zero whenever `engineRunning` is clear |
-| 144 | f64 | gimbalPitch | **actual** gimbal angle [rad] |
-| 152 | f64 | gimbalYaw | **actual** gimbal angle [rad] |
+| 136 | f64 | throttle | **actual** throttle actuator position, fraction of rated flow, averaged over the engines. It can be nonzero while the engine is off (the actuator has not returned to 0); thrust is zero whenever `engineRunning` is clear |
+| 144 | f64 | gimbalPitch | **actual** gimbal angle [rad], averaged over the engines |
+| 152 | f64 | gimbalYaw | **actual** gimbal angle [rad], averaged over the engines |
 | 160 | f64 | propellantMass | [kg] |
 | 168 | f64 | totalMass | [kg] |
 
 Actuator fields are actual positions from the actuator models, never commanded values.
 
+The vehicle has three engines, each with its own actuators; version 1 carries one set of fields, so the server sends the mean of the three. The engines get the same commands apart from a small differential gimbal for roll control, so the mean is close to each engine. TODO(phase 0, item 1): per-engine actuator fields in version 2.
+
 Gimbal sign convention (from `sim_vehicle/src/HopperDynamics.cpp`): with p = gimbalPitch and y = gimbalYaw, the thrust direction in the body frame is `(cos p * sin y, -sin p, cos p * cos y)`. The exhaust points the opposite way. Zero gimbal thrusts along body +z.
+
+The browser truth view shows the combined gimbal direction at the nozzle and
+separate cyan pitch and magenta yaw direction indicators. Both are driven by
+the actual gimbal angles in this snapshot, not flight-software commands.
 
 The server must serve `.js` as `text/javascript` (browsers refuse ES modules otherwise), plus `.html`, `.css`, `.json`, `.txt` and `.glb` with their standard types.
 
@@ -71,7 +77,7 @@ The server must serve `.js` as `text/javascript` (browsers refuse ES modules oth
   "baseRateHz": 1000,
   "snapshotRateHz": 100,
   "timeScale": 1.0,
-  "vehicle": { "name": "test hopper (placeholder)", "length": 20.0, "radius": 4.5 }
+  "vehicle": { "name": "Starship V3 Ship, hop configuration", "length": 52.0, "radius": 4.5 }
 }
 ```
 

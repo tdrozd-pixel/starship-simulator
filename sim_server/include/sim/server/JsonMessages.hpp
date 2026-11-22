@@ -9,7 +9,7 @@ namespace sim::server {
 struct HelloInfo {
     uint32_t runId = 0;
     double timeScale = 1.0;
-    std::string vehicleName = "test hopper (placeholder)";
+    std::string vehicleName = "Starship V3 Ship, hop configuration";
     double vehicleLength = 20.0;  // [m]
     double vehicleRadius = 4.5;   // [m]
 };

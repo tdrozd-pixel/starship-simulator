@@ -17,17 +17,12 @@ export const VISUAL = Object.freeze({
   near: 0.5, // [m]
   far: 5000, // [m]
   pixelRatioCap: 2,
+  // Built-in recorder (see recorder.js)
+  recordBitsPerPixel: 0.1, // [bit/px/frame] style: ~12 Mbit/s at 1080p60
+  recordMemoryWarnBytes: 1e9, // [B] recordings are held in memory until saved
   // Interpolation constants (see interpolator.js)
   interpDelaySnapshots: 2.5, // snapshots of render delay
   bufferSeconds: 2.0, // [s] sim time kept
   offsetWindowSeconds: 3.0, // [s] wall window for min-delay clock offset
   staleSeconds: 3.0, // [s] without any message before STALE
 });
-
-export function placeholderNote(vehicle) {
-  let s = 'Visual: Ship-sized placeholder cylinder (' + VISUAL.shipDiameter + ' m x ' + VISUAL.shipHeight + ' m), not the physics shape.';
-  if (vehicle) {
-    s += ' Physics vehicle: ' + vehicle.name + ', length ' + vehicle.length + ' m, radius ' + vehicle.radius + ' m.';
-  }
-  return s;
-}

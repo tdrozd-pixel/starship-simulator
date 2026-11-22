@@ -4,6 +4,8 @@ import { decodeBinary, parseControl, makeRestartMessage, SNAPSHOT_SIZE } from '.
 import { formatMet, formatTimeScale, formatBodyAttitude } from '../js/hud.js';
 import { createTruthClient } from '../js/truthClient.js';
 import { createInterpolator } from '../js/interpolator.js';
+import { pickMimeType, makeFilename, createFramePacer, bitrateFor } from '../js/recorder.js';
+import { buildTelemetry, vehicleNote, TELEMETRY_ROWS } from '../js/hudModel.js';
 
 const failures = [];
 let passed = 0;
@@ -293,6 +295,68 @@ test('interp halt continuity', () => {
   let prev = after, mono = true;
   for (let w = 1.05; w < 1.2; w += 0.005) { const p = it.sample(w).pos[0]; if (p < prev - 1e-12) mono = false; prev = p; }
   ok(mono && Math.abs(prev - 0.04) < 1e-9, 'reaches final snapshot then holds: ' + prev);
+});
+
+test('recorder mime selection', () => {
+  const only = (set) => (t) => set.includes(t);
+  const mp4 = pickMimeType(only(['video/mp4', 'video/webm']));
+  ok(mp4 && mp4.mimeType === 'video/mp4' && mp4.ext === 'mp4', 'mp4 preferred over webm');
+  const h264 = pickMimeType(only(['video/mp4;codecs=avc1.640028', 'video/mp4']));
+  ok(h264 && h264.mimeType === 'video/mp4;codecs=avc1.640028', 'explicit H.264 first');
+  const webm = pickMimeType(only(['video/webm;codecs=vp8', 'video/webm']));
+  ok(webm && webm.mimeType === 'video/webm;codecs=vp8' && webm.ext === 'webm', 'webm fallback');
+  ok(pickMimeType(only([])) === null, 'nothing supported');
+  ok(pickMimeType(undefined) === null, 'no MediaRecorder');
+  ok(pickMimeType(() => { throw new Error('x'); }) === null, 'throwing probe treated as unsupported');
+});
+
+test('recorder filename and bitrate', () => {
+  const d = new Date(2026, 10, 22, 14, 5, 9);
+  ok(makeFilename(12, d, 'mp4') === 'starship-run12-2026-11-22T14-05-09.mp4', 'filename: ' + makeFilename(12, d, 'mp4'));
+  ok(makeFilename(null, d, 'webm') === 'starship-2026-11-22T14-05-09.webm', 'filename without run');
+  approx(bitrateFor(1920, 1080, 60, 0.1), 12441600, 'bitrate 1080p60');
+});
+
+test('recorder frame pacer', () => {
+  for (const fps of [30, 60]) {
+    const pacer = createFramePacer(fps);
+    let frames = 0;
+    // 144 Hz display for 2 s
+    for (let i = 0; i < 288; i++) if (pacer.due(1000 + i * (1000 / 144))) frames++;
+    ok(Math.abs(frames - 2 * fps) <= 1, fps + ' fps from 144 Hz: ' + frames);
+  }
+  // After a 500 ms stall: one frame, then back on schedule (no burst).
+  const pacer = createFramePacer(60);
+  let t = 0;
+  for (; t < 1000; t += 1000 / 144) pacer.due(t);
+  t += 500;
+  ok(pacer.due(t), 'frame right after stall');
+  let burst = 0;
+  for (let k = 1; k <= 3; k++) if (pacer.due(t + k * (1000 / 144))) burst++;
+  ok(burst <= 1, 'no catch-up burst after stall: ' + burst);
+  // 60 Hz display at 60 fps: every frame (timestamp jitter tolerated).
+  const p60 = createFramePacer(60);
+  let all = 0;
+  for (let i = 0; i < 120; i++) if (p60.due(i * (1000 / 60) + (i % 2 ? 0.3 : -0.3))) all++;
+  ok(all >= 119, '60 fps on a 60 Hz display renders every frame: ' + all);
+});
+
+test('hud model', () => {
+  const none = buildTelemetry(null);
+  ok(none.waiting && none.met === 'T+--:--.-' && TELEMETRY_ROWS.every((r) => none.values[r.key] === '--'), 'no sample');
+  const s = {
+    simTime: 83.25, pos: [1, 2, 49.96], vel: [0, 0, -1.04], quat: [1, 0, 0, 0], throttle: 0.684,
+    gimbalPitch: 0.01, gimbalYaw: -0.02, propellantMass: 266757.2, totalMass: 416757.2,
+    engineRunning: true, touchdown: false, halted: false,
+  };
+  const m = buildTelemetry(s);
+  ok(!m.waiting && m.met === 'T+01:23.2', 'met ' + m.met);
+  ok(m.values.alt === '50.0' && m.values.vs === '-1.0' && m.values.thr === '68', 'alt/vs/thr');
+  ok(m.values.gp === '+0.57' && m.values.gy === '-1.15', 'gimbals ' + m.values.gp + ' ' + m.values.gy);
+  ok(m.values.ax === '+0.00' && m.values.prop === '266757' && m.values.mass === '416757', 'attitude and mass');
+  ok(m.engine && !m.touchdown && !m.finished, 'lamps');
+  ok(vehicleNote(null) === '', 'no banner before hello');
+  ok(vehicleNote({ name: 'Ship', length: 52, radius: 4.5 }) === 'Physics vehicle: Ship, length 52 m, radius 4.5 m.', 'banner text');
 });
 
 const results = { passed, failed: failures.length, failures };

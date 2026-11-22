@@ -34,12 +34,34 @@ export function createCameraRig(renderer, canvas) {
     controls.update();
   }
 
+  // While recording, render at exactly the recording size (pixel ratio 1) whatever the
+  // window and display density, so the GPU cost is bounded; CSS letterboxes it.
+  let fixed = null;
+
   function resize() {
-    const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, VISUAL.pixelRatioCap));
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
+    if (fixed) {
+      renderer.setPixelRatio(1);
+      renderer.setSize(fixed.w, fixed.h, false);
+      camera.aspect = fixed.w / fixed.h;
+    } else {
+      const w = Math.max(1, window.innerWidth), h = Math.max(1, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, VISUAL.pixelRatioCap));
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+    }
     camera.updateProjectionMatrix();
+  }
+
+  function setFixedSize(w, h) {
+    fixed = { w, h };
+    canvas.classList.add('fixed-size');
+    resize();
+  }
+
+  function clearFixedSize() {
+    fixed = null;
+    canvas.classList.remove('fixed-size');
+    resize();
   }
 
   window.addEventListener('resize', resize);
@@ -50,5 +72,5 @@ export function createCameraRig(renderer, canvas) {
   });
   resize();
   reset();
-  return { camera, controls, update, reset, resize };
+  return { camera, controls, update, reset, resize, setFixedSize, clearFixedSize };
 }

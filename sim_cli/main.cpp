@@ -1,4 +1,4 @@
-// Headless runner for the vertical hop scenario.
+// Headless runner for the hop scenario (Starship V3 Ship, hop to Starbase Pad 2).
 //
 //   sim_cli                         real time
 //   sim_cli --fast                  as fast as possible
@@ -6,6 +6,7 @@
 //   sim_cli --ideal-sensors         perfect sensors ("truth mode")
 //   sim_cli --seed 42 --log hop.csv
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
         }
 
         auto scenario = sim::vehicle::buildHopScenario(options);
+        std::printf("%s, target %s\n", options.vehicle.name, options.site.name);
         std::printf("Hop scenario: seed %llu, %s sensors, %s\n", static_cast<unsigned long long>(options.seed),
                     options.idealSensors ? "ideal" : "modeled",
                     pacer.realtime ? "real-time pacing" : "unpaced");
@@ -75,6 +77,8 @@ int main(int argc, char** argv) {
         if (td.occurred) {
             std::printf("Touchdown           : t=%.2f s, %.3f m/s vertical, %.3f m/s horizontal\n", td.time,
                         td.verticalSpeed, td.horizontalSpeed);
+            std::printf("Miss from target    : %.3f m (east %+.3f m, north %+.3f m)\n", std::hypot(td.east, td.north),
+                        td.east, td.north);
         } else {
             std::printf("Touchdown           : none\n");
         }

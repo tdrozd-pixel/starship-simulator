@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace fsw {
 namespace {
@@ -43,6 +44,15 @@ void rotate(const Quaternion& q, const double input[3], double output[3]) {
     output[2] = input[2] + q.w * tz + q.x * ty - q.y * tx;
 }
 
+void cross(const double a[3], const double b[3], double out[3]) {
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+// Body +z (the vehicle axis) expressed in world: its up component is cos(tilt).
+double upComponentOfBodyZ(const Quaternion& q) { return 1.0 - 2.0 * (q.x * q.x + q.y * q.y); }
+
 Quaternion integrateBodyRate(Quaternion attitude, const double rate[3], double dt) {
     const double magnitude = std::sqrt(rate[0] * rate[0] + rate[1] * rate[1] + rate[2] * rate[2]);
     if (magnitude <= 1e-12 || dt <= 0.0) {
@@ -74,16 +84,16 @@ Quaternion gravityAligned(Quaternion attitude, const double specificForce[3]) {
     const double upBody[3] = {specificForce[0] / norm, specificForce[1] / norm, specificForce[2] / norm};
     double upWorld[3];
     rotate(attitude, upBody, upWorld);
-    const double cross[3] = {upWorld[1], -upWorld[0], 0.0};
+    const double crossUp[3] = {upWorld[1], -upWorld[0], 0.0};
     const double dot = std::clamp(upWorld[2], -1.0, 1.0);
-    const double crossNorm = std::sqrt(cross[0] * cross[0] + cross[1] * cross[1]);
+    const double crossNorm = std::sqrt(crossUp[0] * crossUp[0] + crossUp[1] * crossUp[1]);
     if (crossNorm <= 1e-12) {
         if (dot < 0.0) {
             return normalized(multiply({0.0, 1.0, 0.0, 0.0}, attitude));
         }
         return attitude;
     }
-    const Quaternion correction = normalized({1.0 + dot, cross[0], cross[1], cross[2]});
+    const Quaternion correction = normalized({1.0 + dot, crossUp[0], crossUp[1], crossUp[2]});
     return normalized(multiply(correction, attitude));
 }
 
@@ -125,7 +135,9 @@ const char* toString(HopMode mode) {
 HopFlightComputer::HopFlightComputer(Hal& hal, HopConfig config)
     : hal_(hal),
       config_(config),
+      targetFrame_(config.target),
       estimator_(VerticalEstimator::Config{config.gravity, 4.0, 4.0}),
+      horizontal_(HorizontalEstimator::Config{}),
       velocityPid_(config.velocityGains),
       propellantEstimate_(config.initialPropellant) {}
 
@@ -134,13 +146,13 @@ void HopFlightComputer::tick() {
     const double dt = (lastTime_ < 0.0) ? 1.0 / config_.rateHz : t - lastTime_;
     lastTime_ = t;
 
-    updateNavigation(dt);
+    updateNavigation(t, dt);
     updateModeLogic(t, dt);
 
     // Propellant bookkeeping from our own commands (no flow meter yet).
-    if (command_.engineOn) {
-        const double flow = command_.throttle * config_.maxThrust / (config_.ispSeaLevel * config_.gravity);
-        propellantEstimate_ = std::max(0.0, propellantEstimate_ - flow * dt);
+    if (enginesOn_ && config_.vacuumIsp > 0.0) {
+        const double flowPerEngine = throttle_ * config_.vacuumThrust / (config_.vacuumIsp * config_.gravity);
+        propellantEstimate_ = std::max(0.0, propellantEstimate_ - kEngineCount * flowPerEngine * dt);
     }
 
     updateTvc();
@@ -152,12 +164,22 @@ void HopFlightComputer::tick() {
     tm.verticalVelocityEstimate = estimator_.velocity();
     tm.altitudeSetpoint = altitudeSetpoint_;
     tm.velocitySetpoint = velocitySetpoint_;
-    tm.throttleCommand = command_.throttle;
-    tm.massEstimate = config_.dryMass + propellantEstimate_;
+    tm.throttleCommand = enginesOn_ ? throttle_ : 0.0;
+    tm.massEstimate = massEstimate();
+    tm.horizontalNavValid = horizontal_.initialized();
+    tm.eastEstimate = horizontal_.east();
+    tm.northEstimate = horizontal_.north();
+    tm.eastVelocityEstimate = horizontal_.velocityEast();
+    tm.northVelocityEstimate = horizontal_.velocityNorth();
+    tm.eastSetpoint = horizontalTarget_[0];
+    tm.northSetpoint = horizontalTarget_[1];
+    tm.eastAccelCommand = accelCommand_[0];
+    tm.northAccelCommand = accelCommand_[1];
+    tm.gnssFixType = gnssFixType_;
     hal_.publishTelemetry(tm);
 }
 
-void HopFlightComputer::updateNavigation(double dt) {
+void HopFlightComputer::updateNavigation(double t, double dt) {
     const ImuSample imu = hal_.readImu();
     if (imu.valid && imu.stamp > lastImuStamp_) {
         const double imuDt = lastImuStamp_ < 0.0 ? dt : imu.stamp - lastImuStamp_;
@@ -183,39 +205,126 @@ void HopFlightComputer::updateNavigation(double dt) {
         double specificForceWorld[3];
         rotate(attitude, specificForceBody, specificForceWorld);
         estimator_.predict(specificForceWorld[2], dt);
-        velocityWorld_[0] += specificForceWorld[0] * dt;
-        velocityWorld_[1] += specificForceWorld[1] * dt;
-        velocityWorld_[2] += (specificForceWorld[2] - config_.gravity) * dt;
+        // Gravity is vertical in the local frame, so horizontal acceleration is the
+        // horizontal specific force at the IMU, the navigation reference point.
+        horizontal_.predict(specificForceWorld[0], specificForceWorld[1], dt);
     }
 
+    const Quaternion q = attitudeFrom(attitude_);
+
+    // The altimeter looks along body -z from the base: slant range times cos(tilt).
     const AltimeterSample alt = hal_.readAltimeter();
     if (alt.valid && alt.stamp > lastAltimeterStamp_) {
         lastAltimeterStamp_ = alt.stamp;
-        estimator_.correct(alt.range, dt);
+        estimator_.correct(alt.range * std::max(0.0, upComponentOfBodyZ(q)), dt);
     }
 
-    // Sitting on the pad the estimate is known: zero velocity.
+    const GnssSample gnss = hal_.readGnss();
+    if (gnss.valid && gnss.stamp > lastGnssStamp_) {
+        lastGnssStamp_ = gnss.stamp;
+        gnssFixType_ = static_cast<int>(gnss.fixType);
+        ++gnssFixCount_;
+
+        double antennaEnu[3];
+        targetFrame_.toEnu({gnss.latitude, gnss.longitude, gnss.height}, antennaEnu);
+
+        // Lever arm: antenna offset from the IMU, rotated into the local frame.
+        const double lever[3] = {config_.gnssAntennaPosition[0] - config_.imuPosition[0],
+                                 config_.gnssAntennaPosition[1] - config_.imuPosition[1],
+                                 config_.gnssAntennaPosition[2] - config_.imuPosition[2]};
+        double leverWorld[3];
+        rotate(q, lever, leverWorld);
+        double omegaCrossLever[3];
+        cross(angularRateBody_, lever, omegaCrossLever);
+        double leverVelocityWorld[3];
+        rotate(q, omegaCrossLever, leverVelocityWorld);
+
+        // Latency: the fix describes fixTime; move it to now with the velocity estimate.
+        const double age = std::max(0.0, t - gnss.fixTime);
+        const double east = antennaEnu[0] - leverWorld[0] + horizontal_.velocityEast() * age;
+        const double north = antennaEnu[1] - leverWorld[1] + horizontal_.velocityNorth() * age;
+        const double sigma = std::max(0.005, gnss.horizontalSigma);
+        horizontal_.correctPosition(east, north, sigma);
+        horizontal_.correctVelocity(gnss.velocityEnu[0] - leverVelocityWorld[0],
+                                    gnss.velocityEnu[1] - leverVelocityWorld[1], config_.gnssVelocitySigma);
+
+        // GNSS levelling: if the attitude estimate is rotated by a small world-frame
+        // angle phi from the truth, the rotated IMU reports an extra horizontal
+        // acceleration g * (phi_y, -phi_x). The filter's bias state measures exactly
+        // that, so rotate the attitude back by it and hand the bias back to zero.
+        const double bias[2] = {horizontal_.accelBiasEast(), horizontal_.accelBiasNorth()};
+        const double phiX = std::clamp(-bias[1] / config_.gravity, -0.01, 0.01);  // [rad] per update
+        const double phiY = std::clamp(bias[0] / config_.gravity, -0.01, 0.01);
+        const Quaternion correction = normalized({1.0, -0.5 * phiX, -0.5 * phiY, 0.0});
+        storeAttitude(normalized(multiply(correction, attitudeFrom(attitude_))), attitude_);
+        horizontal_.removeBias(phiY * config_.gravity, -phiX * config_.gravity);
+        // TODO(phase 9, item 43): use GNSS height when the altimeter is out of range.
+    }
+
+    // Sitting on the pad the velocity is known: zero.
     if (mode_ == HopMode::Prelaunch || mode_ == HopMode::Landed) {
         estimator_.reset(estimator_.altitude(), 0.0);
-        velocityWorld_[0] = velocityWorld_[1] = velocityWorld_[2] = 0.0;
+        horizontal_.zeroVelocityUpdate();
     }
 }
 
+bool HopFlightComputer::alignedOverTarget() const {
+    const double errEast = horizontalTarget_[0] - horizontal_.east();
+    const double errNorth = horizontalTarget_[1] - horizontal_.north();
+    const double speed = std::hypot(horizontal_.velocityEast(), horizontal_.velocityNorth());
+    return translating_ && std::hypot(errEast, errNorth) < config_.landingAlignTolerance &&
+           speed < config_.landingAlignSpeed;
+}
+
 void HopFlightComputer::updateTvc() {
-    if (!command_.engineOn || config_.maxThrust <= 0.0 || config_.engineLeverArm <= 0.0 ||
-        config_.gimbalLimit <= 0.0 || config_.vehicleRadius <= 0.0 || config_.vehicleLength <= 0.0) {
-        command_.gimbalPitch = 0.0;
-        command_.gimbalYaw = 0.0;
+    for (EngineCommand& e : command_.engines) {
+        e.on = enginesOn_;
+        e.throttle = enginesOn_ ? throttle_ : 0.0;
+        e.gimbalPitch = 0.0;
+        e.gimbalYaw = 0.0;
+    }
+    if (!enginesOn_ || config_.vacuumThrust <= 0.0 || config_.engineLeverArm <= 0.0 ||
+        config_.gimbalLimit <= 0.0 || config_.transverseInertiaDry <= 0.0) {
         return;
     }
 
-    // IMU-only horizontal velocity is dead reckoning; a single engine has no roll authority.
-    const double desiredAccelEast = std::clamp(-config_.horizontalVelocityKp * velocityWorld_[0],
-                                               -config_.maxHorizontalAccel, config_.maxHorizontalAccel);
-    const double desiredAccelNorth = std::clamp(-config_.horizontalVelocityKp * velocityWorld_[1],
-                                                -config_.maxHorizontalAccel, config_.maxHorizontalAccel);
-    const double desiredPitch = -std::atan2(desiredAccelNorth, config_.gravity);
-    const double desiredYaw = std::atan2(desiredAccelEast, config_.gravity);
+    // Horizontal guidance. Until liftoff the vehicle stays upright on the pad.
+    double desiredAccel[2] = {0.0, 0.0};
+    if (mode_ != HopMode::Ignition && horizontal_.initialized()) {
+        const double err[2] = {horizontalTarget_[0] - horizontal_.east(),
+                               horizontalTarget_[1] - horizontal_.north()};
+        const double distance = std::hypot(err[0], err[1]);
+        // Braking profile: approach no faster than the vehicle can stop using half
+        // the allowed horizontal acceleration (v = sqrt(2 * a/2 * d)).
+        const double speedLimit = std::min(config_.maxHorizontalSpeed,
+                                           std::sqrt(config_.maxHorizontalAccel * distance));
+        double velocitySetpoint[2] = {config_.horizontalPositionKp * err[0], config_.horizontalPositionKp * err[1]};
+        const double setpointSpeed = std::hypot(velocitySetpoint[0], velocitySetpoint[1]);
+        if (setpointSpeed > speedLimit && setpointSpeed > 1e-9) {
+            velocitySetpoint[0] *= speedLimit / setpointSpeed;
+            velocitySetpoint[1] *= speedLimit / setpointSpeed;
+        }
+        const double velocityError[2] = {velocitySetpoint[0] - horizontal_.velocityEast(),
+                                         velocitySetpoint[1] - horizontal_.velocityNorth()};
+        const double dt = 1.0 / config_.rateHz;
+        for (int i = 0; i < 2; ++i) {
+            horizontalTrim_[i] = std::clamp(horizontalTrim_[i] + config_.horizontalVelocityKi * velocityError[i] * dt,
+                                            -config_.maxHorizontalTrim, config_.maxHorizontalTrim);
+            desiredAccel[i] = config_.horizontalVelocityKp * velocityError[i] + horizontalTrim_[i];
+        }
+        const double accel = std::hypot(desiredAccel[0], desiredAccel[1]);
+        if (accel > config_.maxHorizontalAccel) {
+            desiredAccel[0] *= config_.maxHorizontalAccel / accel;
+            desiredAccel[1] *= config_.maxHorizontalAccel / accel;
+        }
+    }
+
+    accelCommand_[0] = desiredAccel[0];
+    accelCommand_[1] = desiredAccel[1];
+
+    // Tilt that produces that acceleration while thrust holds up the weight.
+    const double desiredPitch = -std::atan2(desiredAccel[1], config_.gravity);
+    const double desiredYaw = std::atan2(desiredAccel[0], config_.gravity);
     const Quaternion qPitch{std::cos(desiredPitch * 0.5), std::sin(desiredPitch * 0.5), 0.0, 0.0};
     const Quaternion qYaw{std::cos(desiredYaw * 0.5), 0.0, std::sin(desiredYaw * 0.5), 0.0};
     const Quaternion targetAttitude = normalized(multiply(qYaw, qPitch));
@@ -225,18 +334,42 @@ void HopFlightComputer::updateTvc() {
     double error[3];
     rotationVector(attitudeError, error);
 
-    const double mass = config_.dryMass + std::max(0.0, propellantEstimate_);
-    const double transverseInertia = mass * (3.0 * config_.vehicleRadius * config_.vehicleRadius +
-                                              config_.vehicleLength * config_.vehicleLength) / 12.0;
-    const double thrust = std::max(config_.minThrottle, command_.throttle) * config_.maxThrust;
-    const double gimbalGain = transverseInertia / (config_.engineLeverArm * thrust);
+    // Torque per unit gimbal from the mass properties we were given.
+    const double propellantFraction =
+        config_.initialPropellant > 0.0 ? std::max(0.0, propellantEstimate_) / config_.initialPropellant : 0.0;
+    const double transverseInertia =
+        config_.transverseInertiaDry + propellantFraction * config_.transverseInertiaPropellant;
+    const double axialInertia = config_.axialInertiaDry + propellantFraction * config_.axialInertiaPropellant;
+    const double thrustPerEngine = std::max(1.0, std::max(config_.minThrottle, throttle_) * config_.vacuumThrust -
+                                                     config_.ambientPressure * config_.nozzleExitArea);
+    const double totalThrust = kEngineCount * thrustPerEngine;
 
-    command_.gimbalPitch = std::clamp(
-        gimbalGain * (config_.attitudeKp * error[0] + config_.attitudeKd * angularRateBody_[0]),
-        -config_.gimbalLimit, config_.gimbalLimit);
-    command_.gimbalYaw = std::clamp(
-        gimbalGain * (config_.attitudeKp * error[1] + config_.attitudeKd * angularRateBody_[1]),
-        -config_.gimbalLimit, config_.gimbalLimit);
+    // Common gimbal for pitch and yaw (small angle: torque = lever * thrust * angle).
+    const double gimbalGain = transverseInertia / (config_.engineLeverArm * totalThrust);
+    const double commonPitch = gimbalGain * (config_.attitudeKp * error[0] + config_.attitudeKd * angularRateBody_[0]);
+    const double commonYaw = gimbalGain * (config_.attitudeKp * error[1] + config_.attitudeKd * angularRateBody_[1]);
+
+    // Roll: tilt every engine tangentially by the same angle; torque = N * radius * thrust * angle.
+    double roll = 0.0;
+    if (config_.engineClusterRadius > 0.0) {
+        const double rollGain = axialInertia / (totalThrust * config_.engineClusterRadius);
+        roll = std::clamp(-rollGain * (config_.rollKp * error[2] + config_.rollKd * angularRateBody_[2]),
+                          -config_.maxRollGimbal, config_.maxRollGimbal);
+    }
+
+    // Lateral thrust direction per engine in the body x-y plane, from the thrust
+    // direction (cos p sin y, -sin p, cos p cos y).
+    const double lateralX = std::sin(std::clamp(commonYaw, -config_.gimbalLimit, config_.gimbalLimit));
+    const double lateralY = -std::sin(std::clamp(commonPitch, -config_.gimbalLimit, config_.gimbalLimit));
+    for (int i = 0; i < kEngineCount; ++i) {
+        const double azimuth = config_.engineAzimuth0 + 2.0 * std::numbers::pi * i / kEngineCount;
+        const double lx = lateralX - roll * std::sin(azimuth);
+        const double ly = lateralY + roll * std::cos(azimuth);
+        const double pitch = -std::asin(std::clamp(ly, -1.0, 1.0));
+        const double yaw = std::asin(std::clamp(lx / std::cos(pitch), -1.0, 1.0));
+        command_.engines[i].gimbalPitch = std::clamp(pitch, -config_.gimbalLimit, config_.gimbalLimit);
+        command_.engines[i].gimbalYaw = std::clamp(yaw, -config_.gimbalLimit, config_.gimbalLimit);
+    }
 }
 
 void HopFlightComputer::updateModeLogic(double t, double dt) {
@@ -250,15 +383,20 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
 
     switch (mode_) {
         case HopMode::Prelaunch:
-            command_ = ActuatorCommand{};
-            if (t >= config_.ignitionTime) {
+            enginesOn_ = false;
+            throttle_ = 0.0;
+            // Go for ignition only with a navigation solution.
+            if (t >= config_.ignitionTime && gnssFixCount_ >= config_.gnssFixesRequired &&
+                horizontal_.initialized()) {
+                horizontalTarget_[0] = horizontal_.east();
+                horizontalTarget_[1] = horizontal_.north();
                 enter(HopMode::Ignition);
             }
             break;
 
         case HopMode::Ignition:
-            command_.engineOn = true;
-            command_.throttle = config_.ignitionThrottle;
+            enginesOn_ = true;
+            throttle_ = throttleForThrust(config_.ignitionThrustToWeight * massEstimate() * config_.gravity);
             if (alt > config_.liftoffAltitude) {
                 altitudeSetpoint_ = alt;
                 velocityPid_.reset();
@@ -272,7 +410,13 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
             velocitySetpoint_ = std::clamp(config_.altitudeKp * (altitudeSetpoint_ - alt) + feedforward,
                                            -config_.maxSinkRate, config_.maxClimbRate);
             velocitySetpoint_ = std::min(velocitySetpoint_, maxClimbRateToStopWithin(config_.targetAltitude - alt));
-            command_.throttle = computeThrottle(velocitySetpoint_, dt);
+            throttle_ = computeThrottle(velocitySetpoint_, dt);
+            // Clear the liftoff point vertically, then head for the target.
+            if (!translating_ && alt > config_.translateAltitude) {
+                translating_ = true;
+                horizontalTarget_[0] = 0.0;
+                horizontalTarget_[1] = 0.0;
+            }
             if (altitudeSetpoint_ >= config_.targetAltitude && std::abs(alt - config_.targetAltitude) < 1.0) {
                 enter(HopMode::Hover);
             }
@@ -280,12 +424,16 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
         }
 
         case HopMode::Hover:
+            translating_ = true;
+            horizontalTarget_[0] = 0.0;
+            horizontalTarget_[1] = 0.0;
             altitudeSetpoint_ = config_.targetAltitude;
             velocitySetpoint_ = std::clamp(config_.altitudeKp * (altitudeSetpoint_ - alt),
                                            -config_.maxSinkRate, config_.maxClimbRate);
             velocitySetpoint_ = std::min(velocitySetpoint_, maxClimbRateToStopWithin(config_.targetAltitude - alt));
-            command_.throttle = computeThrottle(velocitySetpoint_, dt);
-            if (t - modeStartTime_ >= config_.hoverDuration) {
+            throttle_ = computeThrottle(velocitySetpoint_, dt);
+            // TODO(phase 9, item 47): divert or abort if alignment never comes (propellant margin).
+            if (t - modeStartTime_ >= config_.hoverDuration && alignedOverTarget()) {
                 enter(HopMode::Descent);
             }
             break;
@@ -295,7 +443,7 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
             const double feedforward = (altitudeSetpoint_ > config_.finalDescentAltitude) ? -config_.descentRate : 0.0;
             velocitySetpoint_ = std::clamp(config_.altitudeKp * (altitudeSetpoint_ - alt) + feedforward,
                                            -config_.maxSinkRate, config_.maxClimbRate);
-            command_.throttle = computeThrottle(velocitySetpoint_, dt);
+            throttle_ = computeThrottle(velocitySetpoint_, dt);
             if (alt < config_.finalDescentAltitude + 0.5) {
                 enter(HopMode::FinalDescent);
             }
@@ -305,37 +453,52 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
         case HopMode::FinalDescent:
             altitudeSetpoint_ = 0.0;
             velocitySetpoint_ = -config_.finalDescentRate;
-            command_.throttle = computeThrottle(velocitySetpoint_, dt);
+            throttle_ = computeThrottle(velocitySetpoint_, dt);
             if (alt < config_.touchdownAltitude && std::abs(vel) < config_.touchdownSpeed) {
                 touchdownTimer_ += dt;
             } else {
                 touchdownTimer_ = 0.0;
             }
             if (touchdownTimer_ >= config_.touchdownConfirmTime) {
-                command_ = ActuatorCommand{};  // engine off
+                enginesOn_ = false;
+                throttle_ = 0.0;
                 enter(HopMode::Landed);
             }
             break;
 
         case HopMode::Landed:
-            command_ = ActuatorCommand{};
+            enginesOn_ = false;
+            throttle_ = 0.0;
             velocitySetpoint_ = 0.0;
             break;
     }
 }
 
+double HopFlightComputer::massEstimate() const { return config_.dryMass + std::max(0.0, propellantEstimate_); }
+
+double HopFlightComputer::throttleForThrust(double totalThrust) const {
+    // Per engine: F = throttle * F_vac - p_amb * A_exit.
+    const double perEngine = totalThrust / kEngineCount;
+    const double throttle = (perEngine + config_.ambientPressure * config_.nozzleExitArea) / config_.vacuumThrust;
+    return std::clamp(throttle, config_.minThrottle, 1.0);
+}
+
+double HopFlightComputer::minimumTotalThrust() const {
+    return kEngineCount *
+           std::max(0.0, config_.minThrottle * config_.vacuumThrust - config_.ambientPressure * config_.nozzleExitArea);
+}
+
 double HopFlightComputer::computeThrottle(double velocitySetpoint, double dt) {
     const double accelCommand = velocityPid_.update(velocitySetpoint, estimator_.velocity(), dt);
-    const double mass = config_.dryMass + propellantEstimate_;
-    const double thrust = mass * (config_.gravity + accelCommand);
-    return std::clamp(thrust / config_.maxThrust, config_.minThrottle, 1.0);
+    // Only the vertical component of a tilted thrust vector holds up the weight.
+    const double cosTilt = std::max(0.7, upComponentOfBodyZ(attitudeFrom(attitude_)));
+    return throttleForThrust(massEstimate() * (config_.gravity + accelCommand) / cosTilt);
 }
 
 double HopFlightComputer::maxClimbRateToStopWithin(double distance) const {
     // At minimum throttle the net deceleration is g - Tmin/m. Climbing faster than
     // sqrt(2 a d) means the vehicle cannot stop before the target: it overshoots.
-    const double mass = config_.dryMass + propellantEstimate_;
-    const double brakingDecel = config_.gravity - config_.minThrottle * config_.maxThrust / mass;
+    const double brakingDecel = config_.gravity - minimumTotalThrust() / massEstimate();
     const double usable = std::max(0.1, brakingDecel) * config_.brakingMargin;
     return std::sqrt(2.0 * usable * std::max(0.0, distance));
 }

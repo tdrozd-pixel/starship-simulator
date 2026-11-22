@@ -62,12 +62,14 @@ TEST_CASE(publisher_fields_match_truth) {
     const auto& x = vehicle.state();
     // The last periodic snapshot is at most one publish interval before the end,
     // and the vehicle is stopped on the ground by then.
-    CHECK_NEAR(s.position[2], x.position.z(), 1e-6);
+    // The stream's reference point is the vehicle base, on the ground by now.
+    CHECK_NEAR(s.position[2], vehicle.basePosition().z(), 1e-6);
+    CHECK_NEAR(s.position[0], vehicle.basePosition().x(), 1e-6);
     CHECK_NEAR(s.propellantMass, x.propellantMass, 1e-6);
     CHECK_NEAR(s.totalMass, vehicle.mass(), 1e-6);
-    CHECK_NEAR(s.throttle, x.throttle, 0.01);  // snapshot may precede the final step slightly
-    CHECK_NEAR(s.gimbalPitch, x.gimbal.x(), 0.01);
-    CHECK_NEAR(s.gimbalYaw, x.gimbal.y(), 0.01);
+    CHECK_NEAR(s.throttle, vehicle.meanThrottle(), 0.01);  // snapshot may precede the final step slightly
+    CHECK_NEAR(s.gimbalPitch, vehicle.meanGimbal().x(), 0.01);
+    CHECK_NEAR(s.gimbalYaw, vehicle.meanGimbal().y(), 0.01);
     const double q = std::sqrt(s.attitude[0] * s.attitude[0] + s.attitude[1] * s.attitude[1] +
                                s.attitude[2] * s.attitude[2] + s.attitude[3] * s.attitude[3]);
     CHECK_NEAR(q, 1.0, 1e-6);

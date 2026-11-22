@@ -22,6 +22,7 @@ public:
     double timeSec() const override { return time_; }
     fsw::ImuSample readImu() override;
     fsw::AltimeterSample readAltimeter() override;
+    fsw::GnssSample readGnss() override;
     void commandActuators(const fsw::ActuatorCommand& command) override;
     void publishTelemetry(const fsw::Telemetry& telemetry) override;
 
@@ -29,6 +30,7 @@ private:
     double time_ = 0.0;
     const Channel<ImuMsg>* imu_ = nullptr;
     const Channel<AltimeterMsg>* altimeter_ = nullptr;
+    const Channel<GnssMsg>* gnss_ = nullptr;
     Channel<ActuatorCommandMsg>* commands_ = nullptr;
     Channel<FswTelemetryMsg>* telemetry_ = nullptr;
 };

@@ -120,7 +120,7 @@ def test_basic_and_restart(exe):
         check(kind == "text" and hello["type"] == "hello" and hello["protocol"] == 1, "hello received")
         check(hello["scenario"] == "hop" and hello["baseRateHz"] == 1000 and hello["snapshotRateHz"] == 100,
               "hello rates")
-        check(hello["vehicle"]["name"].startswith("test hopper") and hello["vehicle"]["length"] > 0,
+        check(hello["vehicle"]["name"].startswith("Starship") and hello["vehicle"]["length"] > 0,
               "hello vehicle")
         frames = []
         while len(frames) < 100:

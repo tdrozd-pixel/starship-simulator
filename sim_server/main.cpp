@@ -141,6 +141,7 @@ int main(int argc, char** argv) {
 
         sim::server::HelloInfo hello;
         const sim::vehicle::HopperParams& vehicle = runnerConfig.hop.vehicle;
+        hello.vehicleName = vehicle.name;
         hello.vehicleLength = vehicle.length;
         hello.vehicleRadius = vehicle.radius;
 

@@ -1,59 +1,33 @@
 // HUD: cached element refs, textContent only, DOM writes throttled to ~20 Hz.
-import { VISUAL, placeholderNote } from './visualParams.js';
+// Text comes from hudModel.js, shared with the recorder's canvas HUD.
+import { VISUAL } from './visualParams.js';
+import { buildTelemetry, formatTimeScale, vehicleNote, TELEMETRY_ROWS } from './hudModel.js';
 
-const RAD2DEG = 180 / Math.PI;
-
-// Pure formatters (exported for unit tests).
-export function formatMet(t) {
-  if (!Number.isFinite(t) || t < 0) return 'T+--:--.-';
-  const tenths = Math.floor(t * 10 + 1e-6); // round to tenths first, then split
-  const m = Math.floor(tenths / 600);
-  const rem = tenths - m * 600;
-  const s = Math.floor(rem / 10);
-  return 'T+' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + (rem % 10);
-}
-
-export function formatTimeScale(ts) {
-  if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return 'x-';
-  const r = +ts.toFixed(3);
-  return 'x' + (Number.isInteger(r) ? r.toFixed(1) : String(r));
-}
-
-function signed(v, dp) {
-  const s = v.toFixed(dp);
-  return v >= 0 ? '+' + s : s;
-}
-
-export function formatBodyAttitude(quat) {
-  let [w, x, y, z] = quat;
-  const norm = Math.hypot(w, x, y, z);
-  if (!Number.isFinite(norm) || norm <= 1e-12) return ['+0.00', '+0.00', '+0.00'];
-  w /= norm; x /= norm; y /= norm; z /= norm;
-  if (w < 0) { w = -w; x = -x; y = -y; z = -z; }
-  const vectorNorm = Math.hypot(x, y, z);
-  if (vectorNorm <= 1e-12) return ['+0.00', '+0.00', '+0.00'];
-  const angleDeg = 2 * Math.atan2(vectorNorm, Math.max(-1, Math.min(1, w))) * RAD2DEG;
-  const scale = angleDeg / vectorNorm;
-  return [signed(x * scale, 2), signed(y * scale, 2), signed(z * scale, 2)];
-}
+export { formatMet, formatTimeScale, formatBodyAttitude, signed } from './hudModel.js';
 
 export function createHud(handlers) {
   const $ = (id) => document.getElementById(id);
   const el = {
     conn: $('conn'), run: $('run'), scenario: $('scenario'), timescale: $('timescale'),
-    met: $('met'), alt: $('t-alt'), vs: $('t-vs'), thr: $('t-thr'), gp: $('t-gp'), gy: $('t-gy'),
-    ax: $('t-ax'), ay: $('t-ay'), az: $('t-az'),
-    prop: $('t-prop'), mass: $('t-mass'), lampEngine: $('lamp-engine'), lampTd: $('lamp-td'),
+    met: $('met'), lampEngine: $('lamp-engine'), lampTd: $('lamp-td'),
     lampFin: $('lamp-fin'), waiting: $('waiting'), restart: $('btn-restart'), resetView: $('btn-reset'),
     banner: $('banner'),
+    rec: $('btn-rec'), recRes: $('rec-res'), recFps: $('rec-fps'), recHud: $('rec-hud'), recStatus: $('rec-status'),
   };
+  const values = {};
+  for (const r of TELEMETRY_ROWS) values[r.key] = $('t-' + r.key);
+
   let state = 'connecting', reconnectDelay = 0, errorReason = '';
   let lastWrite = 0;
   let secondsSinceMessage = () => 0;
+  let recording = false;
+  // Latest connection badge, for the recorder's canvas HUD.
+  const status = { connText: 'CONNECTING', connClass: 'amber', run: '#-', scenario: '-', timeScale: 'x1.0', banner: '' };
 
-  el.banner.textContent = placeholderNote(null);
+  status.banner = el.banner.textContent = vehicleNote(null);
   el.restart.addEventListener('click', () => handlers.onRestart && handlers.onRestart());
   el.resetView.addEventListener('click', () => handlers.onResetView && handlers.onResetView());
+  el.rec.addEventListener('click', () => handlers.onRecordToggle && handlers.onRecordToggle());
 
   function renderConnection() {
     let text, cls;
@@ -64,6 +38,8 @@ export function createHud(handlers) {
     else if (state.startsWith('error')) { text = 'ERROR ' + errorReason; cls = 'red'; }
     else if (state === 'closed') { text = 'DISCONNECTED'; cls = 'amber'; }
     else { text = 'CONNECTING'; cls = 'amber'; }
+    status.connText = text;
+    status.connClass = cls;
     el.conn.textContent = text;
     el.conn.className = 'badge ' + cls;
     el.restart.disabled = state !== 'open';
@@ -73,12 +49,12 @@ export function createHud(handlers) {
 
   return {
     setHello(h) {
-      el.scenario.textContent = String(h.scenario);
-      el.timescale.textContent = formatTimeScale(h.timeScale);
-      el.run.textContent = '#' + h.runId;
-      el.banner.textContent = placeholderNote(h.vehicle);
+      status.scenario = el.scenario.textContent = String(h.scenario);
+      status.timeScale = el.timescale.textContent = formatTimeScale(h.timeScale);
+      status.run = el.run.textContent = '#' + h.runId;
+      status.banner = el.banner.textContent = vehicleNote(h.vehicle);
     },
-    setRun(id) { el.run.textContent = '#' + id; },
+    setRun(id) { status.run = el.run.textContent = '#' + id; },
     setConnection(s, extra) {
       state = s;
       if (s === 'reconnecting') reconnectDelay = extra || 0;
@@ -87,33 +63,42 @@ export function createHud(handlers) {
     },
     setError(reason) { errorReason = reason; },
     setStaleSource(fn) { secondsSinceMessage = fn; },
+    // For the recorder: the strings the HUD shows right now.
+    status() { return status; },
     update(sample, nowMs) {
       if (nowMs - lastWrite < 50) return;
       lastWrite = nowMs;
       renderConnection();
-      if (!sample) {
-        el.waiting.style.display = 'block';
-        el.met.textContent = formatMet(NaN);
-        for (const k of ['alt', 'vs', 'thr', 'gp', 'gy', 'ax', 'ay', 'az', 'prop', 'mass']) el[k].textContent = '--';
-        setLamp(el.lampEngine, false); setLamp(el.lampTd, false); setLamp(el.lampFin, false);
-        return;
-      }
-      el.waiting.style.display = 'none';
-      el.met.textContent = formatMet(sample.simTime);
-      el.alt.textContent = sample.pos[2].toFixed(1);
-      el.vs.textContent = signed(sample.vel[2], 1);
-      el.thr.textContent = (sample.throttle * 100).toFixed(0);
-      el.gp.textContent = signed(sample.gimbalPitch * RAD2DEG, 2);
-      el.gy.textContent = signed(sample.gimbalYaw * RAD2DEG, 2);
-      const attitude = formatBodyAttitude(sample.quat);
-      el.ax.textContent = attitude[0];
-      el.ay.textContent = attitude[1];
-      el.az.textContent = attitude[2];
-      el.prop.textContent = sample.propellantMass.toFixed(0);
-      el.mass.textContent = sample.totalMass.toFixed(0);
-      setLamp(el.lampEngine, sample.engineRunning);
-      setLamp(el.lampTd, sample.touchdown);
-      setLamp(el.lampFin, sample.halted);
+      const t = buildTelemetry(sample);
+      el.waiting.style.display = t.waiting ? 'block' : 'none';
+      el.met.textContent = t.met;
+      for (const r of TELEMETRY_ROWS) values[r.key].textContent = t.values[r.key];
+      setLamp(el.lampEngine, t.engine);
+      setLamp(el.lampTd, t.touchdown);
+      setLamp(el.lampFin, t.finished);
+    },
+
+    // Recorder controls (DOM only: never drawn into the video).
+    recordOptions() {
+      const [width, height] = el.recRes.value.split('x').map(Number);
+      return { width, height, fps: Number(el.recFps.value), includeHud: el.recHud.checked };
+    },
+    setRecordSupported(supported, reason) {
+      el.rec.disabled = !supported;
+      el.rec.title = supported ? '' : reason;
+      if (!supported) el.recStatus.textContent = 'recording unavailable';
+    },
+    setRecording(on) {
+      recording = on;
+      el.rec.textContent = on ? 'Stop' : 'Record';
+      el.rec.classList.toggle('recording', on);
+      for (const c of [el.recRes, el.recFps, el.recHud]) c.disabled = on;
+      if (!on) { el.recStatus.textContent = ''; el.recStatus.className = ''; }
+    },
+    setRecordStatus(text, warn) {
+      if (!recording && !warn) return;
+      el.recStatus.textContent = text;
+      el.recStatus.className = warn ? 'warn' : 'live';
     },
   };
 }

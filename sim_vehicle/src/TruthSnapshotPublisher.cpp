@@ -32,18 +32,24 @@ void TruthSnapshotPublisher::fill(TruthSnapshot& s, uint64_t step, double simTim
     if (truth_.touchdown().occurred) {
         s.flags |= kSnapTouchdown;
     }
+    // The truth stream's reference point is the vehicle base, not the CG.
+    const Eigen::Vector3d base = truth_.basePosition();
+    const Eigen::Vector3d baseVelocity = truth_.pointVelocityWorld(Eigen::Vector3d::Zero());
     for (int i = 0; i < 3; ++i) {
-        s.position[i] = x.position[i];
-        s.velocity[i] = x.velocity[i];
+        s.position[i] = base[i];
+        s.velocity[i] = baseVelocity[i];
         s.angularRate[i] = x.angularRate[i];
     }
     s.attitude[0] = x.attitude.w();
     s.attitude[1] = x.attitude.x();
     s.attitude[2] = x.attitude.y();
     s.attitude[3] = x.attitude.z();
-    s.throttle = x.throttle;  // actual, from the actuator model
-    s.gimbalPitch = x.gimbal.x();
-    s.gimbalYaw = x.gimbal.y();
+    // Actual actuator positions, averaged over the engines (protocol v1 has one engine).
+    // TODO(phase 0, item 1): per-engine actuator fields in truth stream v2.
+    const Eigen::Vector2d gimbal = truth_.meanGimbal();
+    s.throttle = truth_.meanThrottle();
+    s.gimbalPitch = gimbal.x();
+    s.gimbalYaw = gimbal.y();
     s.propellantMass = x.propellantMass;
     s.totalMass = truth_.mass();
 }

@@ -29,11 +29,27 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
   border: 1px solid #667; border-radius: 4px; padding: 6px 12px; cursor: pointer;
 }
 #buttons button:disabled { opacity: 0.4; cursor: default; }
+#recorder {
+  bottom: 44px; left: 12px; display: flex; gap: 8px; align-items: center; pointer-events: auto;
+}
+#recorder button, #recorder select {
+  font: inherit; color: #fff; background: rgba(10, 14, 20, 0.75);
+  border: 1px solid #667; border-radius: 4px; padding: 4px 8px;
+}
+#recorder button { cursor: pointer; }
+#recorder button:disabled, #recorder select:disabled { opacity: 0.4; cursor: default; }
+#recorder button.recording { background: #c03030; border-color: #e04848; }
+#recorder label { display: flex; gap: 4px; align-items: center; }
+#rec-status.live { color: #ff6060; font-weight: bold; }
+#rec-status.warn { color: #f0b030; }
+/* While recording, the canvas renders at the recording size; show it letterboxed. */
+#view.fixed-size { object-fit: contain; background: #000; }
 #banner {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 12px; text-align: center;
   background: rgba(10, 14, 20, 0.7); font-size: 12px;
 }
 @media (max-width: 600px) {
+  #recorder { bottom: 90px; flex-wrap: wrap; max-width: 55%; }
   #telemetry { top: auto; bottom: 90px; right: 8px; min-width: 0; font-size: 11px; }
   #met { font-size: 16px; }
 }

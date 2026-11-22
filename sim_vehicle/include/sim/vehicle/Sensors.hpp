@@ -7,6 +7,7 @@
 #include "sim/core/Bus.hpp"
 #include "sim/core/Model.hpp"
 #include "sim/core/Random.hpp"
+#include "sim/env/Geodesy.hpp"
 #include "sim/vehicle/HopperDynamics.hpp"
 #include "sim/vehicle/Messages.hpp"
 
@@ -51,8 +52,8 @@ struct AltimeterSpec {
     bool ideal = false;
 };
 
-// Radar altimeter measuring straight down. TODO(phase 6, item 30): beam
-// geometry vs attitude, terrain, latency, multipath near the tower.
+// Radar altimeter at the base, measuring slant range along body -z to flat ground.
+// TODO(phase 6, item 30): beam width, terrain, latency, multipath near the tower.
 class RadarAltimeterModel final : public Model {
 public:
     RadarAltimeterModel(std::string name, double rateHz, const HopperDynamics& truth, AltimeterSpec spec,
@@ -66,6 +67,72 @@ private:
     AltimeterSpec spec_;
     Rng rng_;
     Channel<AltimeterMsg>* out_ = nullptr;
+};
+
+// GNSS receiver error model. Public sources describe Starship navigation as GNSS
+// plus inertial; one unverified report says RTK-grade (centimeter) differential
+// GPS is used near the tower. Values below are generic receiver figures
+// (estimates), not a SpaceX unit.
+struct GnssSpec {
+    int fixType = 2;                  // fsw::GnssFixType: 1 standalone, 2 RTK fixed
+    double outputRateHz = 10.0;       // solutions per second (must divide the model rate)
+    double latency = 0.05;            // [s] fix time of validity to output
+    // Errors: slowly varying (first-order Gauss-Markov) plus white noise, per axis.
+    double horizontalBiasSigma = 0.01;  // [m]
+    double verticalBiasSigma = 0.02;    // [m]
+    double biasTimeConstant = 30.0;     // [s]
+    double horizontalNoiseSigma = 0.008;  // [m]
+    double verticalNoiseSigma = 0.015;    // [m]
+    double velocityNoiseSigma = 0.02;     // [m/s] Doppler velocity, per axis
+    double reportedHorizontalSigma = 0.015;  // [m] what the receiver claims
+    double reportedVerticalSigma = 0.03;     // [m]
+    double angleQuantum = 1.0e-10;      // [rad] latitude/longitude output resolution (~0.6 mm)
+    double dropoutProbability = 0.0;    // per solution
+    bool ideal = false;                 // true: exact antenna truth, no latency
+
+    // Single-point GPS, no corrections: meter-level, slowly wandering.
+    static GnssSpec standalone() {
+        GnssSpec s;
+        s.fixType = 1;
+        s.horizontalBiasSigma = 1.2;
+        s.verticalBiasSigma = 2.5;
+        s.biasTimeConstant = 300.0;
+        s.horizontalNoiseSigma = 0.3;
+        s.verticalNoiseSigma = 0.6;
+        s.velocityNoiseSigma = 0.05;
+        s.reportedHorizontalSigma = 1.5;
+        s.reportedVerticalSigma = 3.0;
+        return s;
+    }
+};
+
+// GNSS receiver with its antenna at `antennaFromBase` (body frame). Truth is the
+// sim ENU position of the antenna, tied to WGS-84 through the site frame.
+// Runs at its model rate to time the latency, and outputs at outputRateHz.
+// TODO(phase 6, item 30): multipath near the tower, satellite geometry, plume and
+// plasma attenuation, cycle slips, loss of RTK fix.
+class GnssModel final : public Model {
+public:
+    GnssModel(std::string name, double rateHz, const HopperDynamics& truth, const env::LocalTangentFrame& site,
+              const Eigen::Vector3d& antennaFromBase, GnssSpec spec, uint64_t seed);
+
+    void initialize(Bus& bus) override;
+    void update(const StepContext& ctx) override;
+
+private:
+    double gaussMarkovStep(double value, double sigma, double period);
+
+    const HopperDynamics& truth_;
+    const env::LocalTangentFrame& site_;
+    Eigen::Vector3d antenna_;
+    GnssSpec spec_;
+    Rng rng_;
+    int stepsPerOutput_ = 1;
+    int stepCounter_ = 0;
+    Eigen::Vector3d bias_ = Eigen::Vector3d::Zero();  // ENU [m]
+    bool pending_ = false;
+    GnssMsg pendingFix_;
+    Channel<GnssMsg>* out_ = nullptr;
 };
 
 }  // namespace sim::vehicle

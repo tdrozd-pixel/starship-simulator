@@ -1,7 +1,8 @@
 """Web client test runner. Run with: python -I web/tests/run_web_tests.py
 
 Serves web/ on a free port, runs the browser unit tests, cross-checks the JS
-decoder against a Python-packed buffer, and smoke-loads index.html.
+decoder against a Python-packed buffer, smoke-loads index.html, and records a
+short clip with the built-in recorder.
 """
 import functools
 import http.server
@@ -110,6 +111,42 @@ def main():
         if real:
             fails += ["smoke: " + e for e in real]
         print("smoke: ignored", len(errors) - len(real), "websocket errors")
+
+        # 4. Built-in recorder: record ~2 s at 1080p30, check pacing, size and the file.
+        rec = browser.new_page(accept_downloads=True)
+        rec_errors = []
+        rec.on("pageerror", lambda e: rec_errors.append("pageerror: " + str(e)))
+        rec.goto(base + "/index.html")
+        rec.wait_for_timeout(500)
+        if rec.is_disabled("#btn-rec"):
+            fails.append("recorder: Record button disabled (" + str(rec.get_attribute("#btn-rec", "title")) + ")")
+        else:
+            rec.select_option("#rec-res", "1920x1080")
+            rec.select_option("#rec-fps", "30")
+            rec.click("#btn-rec")
+            rec.wait_for_timeout(300)
+            size = rec.evaluate("[document.getElementById('view').width, document.getElementById('view').height]")
+            if size != [1920, 1080]:
+                fails.append(f"recorder: render size {size}, expected [1920, 1080]")
+            start = rec.evaluate("window.__viewStats.renders")
+            rec.wait_for_timeout(2000)
+            rate = (rec.evaluate("window.__viewStats.renders") - start) / 2.0
+            if not 24 <= rate <= 33:
+                fails.append(f"recorder: {rate:.1f} renders/s while recording at 30 fps")
+            with rec.expect_download(timeout=15000) as dl_info:
+                rec.click("#btn-rec")
+            dl = dl_info.value
+            path = dl.path()
+            nbytes = os.path.getsize(path) if path else 0
+            name = dl.suggested_filename
+            if nbytes <= 0 or not (name.endswith(".mp4") or name.endswith(".webm")) or not name.startswith("starship-"):
+                fails.append(f"recorder: bad download {name!r}, {nbytes} bytes")
+            rec.wait_for_timeout(200)
+            after = rec.evaluate("[document.getElementById('view').width, document.getElementById('view').height]")
+            if after == [1920, 1080] and rec.viewport_size != {"width": 1920, "height": 1080}:
+                fails.append("recorder: fixed render size not cleared after stop")
+            print(f"recorder: {rate:.1f} renders/s at 30 fps, saved {name} ({nbytes} bytes)")
+        fails += ["recorder: " + e for e in rec_errors]
         browser.close()
     srv.shutdown()
     if fails:

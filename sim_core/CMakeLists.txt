@@ -4,7 +4,8 @@ add_library(sim_core STATIC
     src/Pacer.cpp
     src/CsvWriter.cpp
     src/Atmosphere.cpp
-    src/Weather.cpp)
+    src/Weather.cpp
+    src/Geodesy.cpp)
 
 target_include_directories(sim_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(sim_core PUBLIC Eigen3::Eigen)
