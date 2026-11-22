@@ -1,0 +1,8 @@
+function(sim_set_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        target_compile_definitions(${target} PRIVATE _USE_MATH_DEFINES NOMINMAX)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wshadow)
+    endif()
+endfunction()
