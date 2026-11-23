@@ -38,6 +38,20 @@ export function targetFrame(cfg) {
   return cachedFrame;
 }
 
+// Tilt of the nose (+z) from vertical split into the east and north planes, and the bearing of
+// body +x, from a w,x,y,z body-to-world quaternion in the ENU world. Angles [deg]; out is
+// {tiltE, tiltN, roll} (roll: bearing of body +x projected on the horizontal, 0 = north, clockwise).
+export function attitudeAngles(q, out) {
+  const [w, x, y, z] = q;
+  const n2 = w * w + x * x + y * y + z * z || 1;
+  const noseE = 2 * (x * z + w * y) / n2, noseN = 2 * (y * z - w * x) / n2, noseU = 1 - 2 * (x * x + y * y) / n2;
+  const bxE = 1 - 2 * (y * y + z * z) / n2, bxN = 2 * (x * y + w * z) / n2;
+  out.tiltE = Math.atan2(noseE, noseU) * RAD2DEG;
+  out.tiltN = Math.atan2(noseN, noseU) * RAD2DEG;
+  out.roll = (Math.atan2(bxE, bxN) * RAD2DEG + 360) % 360;
+  return out;
+}
+
 const tmpEnu = [0, 0, 0];
 const tmpRot = [0, 0, 0];
 
@@ -56,10 +70,10 @@ export function createModeTimeline() {
 }
 
 // link: {fps} computed by the page from wall time. wallNow: wall-clock seconds.
-export function buildModel(store, wallNow, link) {
+export function buildModel(store, wallNow, link, navOverride = null) {
   const fsw = store.latest[APID.FSW];
   const cfg = store.latest[APID.CONFIG];
-  const nav = store.latest[APID.NAV];
+  const nav = navOverride || store.latest[APID.NAV];
   const gnc = store.latest[APID.GNC];
   const gnss = store.latest[APID.GNSS];
   const t = {};
@@ -80,15 +94,18 @@ export function buildModel(store, wallNow, link) {
   }
 
   // Navigation readouts.
+  let att = null;
   if (nav) {
     rotationVectorDeg(nav.attitude, tmpRot);
     t.tilt = fmt(tiltDeg(nav.attitude), 2);
+    att = attitudeAngles(nav.attitude, { tiltE: 0, tiltN: 0, roll: 0 });
+    t.roll = fmt(att.roll, 1);
     t.attX = signed(tmpRot[0], 2); t.attY = signed(tmpRot[1], 2); t.attZ = signed(tmpRot[2], 2);
     t.rateX = signed(nav.angularRate[0] * RAD2DEG, 2);
     t.rateY = signed(nav.angularRate[1] * RAD2DEG, 2);
     t.rateZ = signed(nav.angularRate[2] * RAD2DEG, 2);
   } else {
-    t.tilt = t.attX = t.attY = t.attZ = t.rateX = t.rateY = t.rateZ = DASH;
+    t.tilt = t.roll = t.attX = t.attY = t.attZ = t.rateX = t.rateY = t.rateZ = DASH;
   }
 
   // Flight software.
@@ -108,6 +125,12 @@ export function buildModel(store, wallNow, link) {
   t.cfgTarget = cfg ? formatLatitude(cfg.targetLatitude) + ' ' + formatLongitude(cfg.targetLongitude) : DASH;
   t.spEast = gnc ? fmtSigned(gnc.eastSetpoint, 2) : DASH;
   t.spNorth = gnc ? fmtSigned(gnc.northSetpoint, 2) : DASH;
+  let thrSum = 0, thrOn = 0;
+  if (gnc) for (const e of gnc.engines) if (e.on) { thrSum += e.throttle; thrOn++; }
+  t.throttle = gnc ? fmt(thrOn ? 100 * thrSum / thrOn : 0, 0) : DASH; // mean over engines that are on
+  t.cfgTargetAlt = cfg ? fmt(cfg.targetAltitude, 1) : DASH;
+  t.cfgTranslateAlt = cfg ? fmt(cfg.translateAltitude, 1) : DASH;
+  t.cfgTargetHeight = cfg ? fmt(cfg.targetHeight, 1) : DASH;
   const lamps = {
     enginesOn: !!(fsw && fsw.enginesOn), navValid: !!(fsw && fsw.navValid),
     translating: !!(fsw && fsw.translating), aligned: !!(fsw && fsw.aligned),
@@ -147,8 +170,11 @@ export function buildModel(store, wallNow, link) {
   t.navNorth = navDelta ? fmtSigned(navDelta.north, 2) : DASH;
   t.navDist = navDelta ? fmt(navDelta.dist, 2) : DASH;
 
+  t.gnssChip = gnss ? t.gnssFix + '  ' + gnss.satellitesUsed + '/' + gnss.satellitesVisible + '  ' + (raw ? fmt(raw.dist, 1) : DASH) + ' m' : DASH;
+
   return {
     text: t, lamps, stale, raw, navDelta, frame, have,
+    att,
     modeValue: fsw ? fsw.mode : -1, fixValue: gnss ? gnss.fixType : -1,
     modeColor: fsw ? MODE_COLORS[fsw.mode] || '#667788' : '#445',
   };

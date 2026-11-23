@@ -1,9 +1,24 @@
 // One gimbal box per engine: +-15 deg crosshair, measured dot vs commanded ring. DOM/canvas only.
-import { fitCanvas, COLORS } from './canvasUtil.js';
+import { fitCanvas, cssSize, COLORS } from './canvasUtil.js';
 import { GIMBAL_LIMIT_DEG, RAD2DEG } from './gncPackets.js';
 
 // cmd: {pitch,yaw,on} rad or null; meas: {pitch,yaw,valid} rad or null. Yaw is horizontal, pitch vertical (up positive).
+// Skips the redraw (returns false) when nothing visible changed since the last draw of this canvas.
+const lastKey = new WeakMap();
+const EPS = 0.0003; // [rad] about 0.017 deg: well under one pixel of the box
 export function drawGimbalBox(canvas, cmd, meas) {
+  const sz = cssSize(canvas);
+  const key = [cmd ? cmd.pitch : NaN, cmd ? cmd.yaw : NaN, meas ? meas.pitch : NaN, meas ? meas.yaw : NaN, meas && meas.valid ? 1 : 0, sz.w, sz.h];
+  const prev = lastKey.get(canvas);
+  if (prev) {
+    let same = true;
+    for (let i = 0; i < key.length && same; i++) {
+      const a = key[i], b = prev[i];
+      if (!(a === b || (a !== a && b !== b) || (i < 4 && Math.abs(a - b) < EPS))) same = false;
+    }
+    if (same) return false;
+  }
+  lastKey.set(canvas, key);
   const { ctx, w, h } = fitCanvas(canvas);
   ctx.fillStyle = COLORS.bg;
   ctx.fillRect(0, 0, w, h);
@@ -43,4 +58,5 @@ export function drawGimbalBox(canvas, cmd, meas) {
     ctx.arc(cx + px(clamp(meas.yaw * RAD2DEG)), cy - px(clamp(meas.pitch * RAD2DEG)), 4, 0, 2 * Math.PI);
     ctx.fill();
   }
+  return true;
 }

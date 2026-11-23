@@ -1,0 +1,175 @@
+{
+  "_comment": [
+    "Telemetry dictionary: the single source of truth for the GNC downlink packets.",
+    "tools/telemetry/generate.py turns it into flight_sw/include/fsw/TelemetryPackets.hpp,",
+    "web/js/gnc/gncPackets.generated.js and docs/telemetry/gnc_packets.md. Edit this file, then run",
+    "`python -I tools/telemetry/generate.py`. Everything is big-endian. Offsets are computed, never written here.",
+    "Field types: u8 u16 u32 f32 f64, pad (count = number of zero bytes), record:<name> (see records).",
+    "Field keys: name (camelCase, the key of the decoded console object), type, count (array length),",
+    "unit, description, enum (name in enums), bits (flag names for a u8, lowest bit first),",
+    "boolean (a u8 that is 0 or 1; decoded as a boolean), limits ({\"yellow\":[lo,hi],\"red\":[lo,hi]}).",
+    "TODO(phase 10, item 48): fill in per-field limits; the alarm logic of the consoles will use them. None are defined yet."
+  ],
+  "version": 1,
+  "secondaryHeader": {
+    "_comment": "Documentation only. The header is written by fsw/Ccsds.hpp, not generated.",
+    "timeCode": "CUC",
+    "coarseBytes": 4,
+    "fineBytes": 2
+  },
+  "enums": {
+    "mode": [
+      {"value": 0, "name": "Prelaunch", "label": "PRELAUNCH"},
+      {"value": 1, "name": "Ignition", "label": "IGNITION"},
+      {"value": 2, "name": "Ascent", "label": "ASCENT"},
+      {"value": 4, "name": "Descent", "label": "DESCENT"},
+      {"value": 5, "name": "FinalDescent", "label": "FINAL DESCENT"},
+      {"value": 6, "name": "Landed", "label": "LANDED"}
+    ],
+    "gnssFixType": [
+      {"value": 0, "name": "None", "label": "NO FIX"},
+      {"value": 1, "name": "Standalone", "label": "SPS"},
+      {"value": 2, "name": "RtkFixed", "label": "RTK FIXED"}
+    ]
+  },
+  "constants": [
+    {"name": "engineCount", "value": 3, "unit": "", "description": "Engines in the hop configuration (three sea-level Raptor 3).", "source": "sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate)"},
+    {"name": "engineAzimuthFirstDeg", "value": 90, "unit": "deg", "description": "Azimuth of engine 0 from body +x toward +y; engine i sits at this plus engineAzimuthStepDeg * i.", "source": "sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate)"},
+    {"name": "engineAzimuthStepDeg", "value": 120, "unit": "deg", "description": "Azimuth step between engines.", "source": "sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate)"},
+    {"name": "engineRadius", "value": 1.55, "unit": "m", "description": "Engine distance from the vehicle axis.", "source": "sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate)"},
+    {"name": "gimbalLimitDeg", "value": 15, "unit": "deg", "description": "Gimbal deflection limit.", "source": "sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate)"}
+  ],
+  "records": {
+    "gnc_engine": {
+      "title": "Engine command record",
+      "description": "Per-engine command in the guidance and control packet.",
+      "fields": [
+        {"name": "on", "type": "u8", "boolean": true, "description": "engine commanded on"},
+        {"name": "pad", "type": "pad", "count": 3},
+        {"name": "throttle", "type": "f32", "unit": "fraction", "description": "throttle command, fraction of rated flow"},
+        {"name": "pitch", "type": "f32", "unit": "rad", "description": "gimbal pitch command (about body x)"},
+        {"name": "yaw", "type": "f32", "unit": "rad", "description": "gimbal yaw command (about body y)"}
+      ]
+    },
+    "feedback_engine": {
+      "title": "Engine gimbal feedback record",
+      "description": "Per-engine measured gimbal position in the actuator feedback packet.",
+      "fields": [
+        {"name": "valid", "type": "u8", "boolean": true, "description": "gimbal position sensor reading is valid"},
+        {"name": "pad", "type": "pad", "count": 3},
+        {"name": "pitch", "type": "f32", "unit": "rad", "description": "measured gimbal pitch"},
+        {"name": "yaw", "type": "f32", "unit": "rad", "description": "measured gimbal yaw"}
+      ]
+    }
+  },
+  "packets": [
+    {
+      "name": "fsw_status",
+      "title": "FSW status",
+      "apid": 256,
+      "rate": {"kind": "cycles", "period": 10},
+      "description": "Flight software mode, health flags and counters.",
+      "fields": [
+        {"name": "mode", "type": "u8", "enum": "mode", "description": "flight software mode (`fsw::HopMode`)"},
+        {"name": "flags", "type": "u8", "description": "status flags",
+         "bits": [
+           {"name": "enginesOn", "description": "engines on"},
+           {"name": "navValid", "description": "horizontal nav valid"},
+           {"name": "translating", "description": "translating to target"},
+           {"name": "aligned", "description": "aligned over target"},
+           {"name": "gnssReady", "description": "GNSS ready (fix count >= required)"}
+         ]},
+        {"name": "gnssFixCount", "type": "u16", "description": "GNSS fixes received; saturates at 65535"},
+        {"name": "cycleCount", "type": "u32", "description": "flight computer cycles since start"},
+        {"name": "timeInMode", "type": "f32", "unit": "s", "description": "time in the current mode"},
+        {"name": "propellant", "type": "f32", "unit": "kg", "description": "propellant estimate"},
+        {"name": "mass", "type": "f32", "unit": "kg", "description": "vehicle mass estimate"}
+      ]
+    },
+    {
+      "name": "mission_config",
+      "title": "Mission config",
+      "apid": 257,
+      "rate": {"kind": "cycles", "period": 100},
+      "description": "The target and hop parameters the flight software is configured with.",
+      "fields": [
+        {"name": "targetLatitude", "type": "f64", "unit": "rad", "description": "WGS-84 geodetic"},
+        {"name": "targetLongitude", "type": "f64", "unit": "rad", "description": "east positive"},
+        {"name": "targetHeight", "type": "f64", "unit": "m", "description": "above the WGS-84 ellipsoid"},
+        {"name": "targetAltitude", "type": "f32", "unit": "m", "description": "hop altitude"},
+        {"name": "alignTolerance", "type": "f32", "unit": "m", "description": "landing alignment tolerance"},
+        {"name": "translateAltitude", "type": "f32", "unit": "m", "description": "altitude at which translation to the target starts"}
+      ]
+    },
+    {
+      "name": "navigation",
+      "title": "Navigation",
+      "apid": 272,
+      "rate": {"kind": "cycles", "period": 2},
+      "description": "Estimates are the flight software's; \"measured\" values are the latest raw sensor readings.",
+      "fields": [
+        {"name": "attitude", "type": "f32", "count": 4, "description": "components w, x, y, z; estimated, body to local ENU"},
+        {"name": "angularRate", "type": "f32", "count": 3, "unit": "rad/s", "description": "components x, y, z; measured (IMU), body"},
+        {"name": "specificForce", "type": "f32", "count": 3, "unit": "m/s^2", "description": "components x, y, z; measured (IMU), body"},
+        {"name": "altitude", "type": "f32", "unit": "m", "description": "estimated, base above ground"},
+        {"name": "verticalVelocity", "type": "f32", "unit": "m/s", "description": "estimated"},
+        {"name": "altimeterRange", "type": "f32", "unit": "m", "description": "measured slant range"},
+        {"name": "altimeterValid", "type": "u8", "boolean": true, "description": "0 or 1"},
+        {"name": "pad", "type": "pad", "count": 3},
+        {"name": "east", "type": "f32", "unit": "m", "description": "estimated, IMU point in the target's ENU frame"},
+        {"name": "north", "type": "f32", "unit": "m", "description": "estimated, IMU point in the target's ENU frame"},
+        {"name": "velocityEast", "type": "f32", "unit": "m/s", "description": "estimated"},
+        {"name": "velocityNorth", "type": "f32", "unit": "m/s", "description": "estimated"},
+        {"name": "accelBiasEast", "type": "f32", "unit": "m/s^2", "description": "estimated apparent acceleration bias"},
+        {"name": "accelBiasNorth", "type": "f32", "unit": "m/s^2", "description": "estimated apparent acceleration bias"}
+      ]
+    },
+    {
+      "name": "guidance_control",
+      "title": "Guidance and control",
+      "apid": 288,
+      "rate": {"kind": "cycles", "period": 2},
+      "description": "Guidance setpoints, control commands and the per-engine commands sent to the actuators.",
+      "fields": [
+        {"name": "altitudeSetpoint", "type": "f32", "unit": "m", "description": "altitude setpoint"},
+        {"name": "velocitySetpoint", "type": "f32", "unit": "m/s", "description": "vertical velocity setpoint"},
+        {"name": "eastSetpoint", "type": "f32", "unit": "m", "description": "horizontal target, target frame"},
+        {"name": "northSetpoint", "type": "f32", "unit": "m", "description": "horizontal target, target frame"},
+        {"name": "eastAccelCommand", "type": "f32", "unit": "m/s^2", "description": "commanded east acceleration"},
+        {"name": "northAccelCommand", "type": "f32", "unit": "m/s^2", "description": "commanded north acceleration"},
+        {"name": "attitudeError", "type": "f32", "count": 3, "unit": "rad", "description": "components x, y, z; body"},
+        {"name": "engines", "type": "record:gnc_engine", "count": 3, "description": "per engine command"}
+      ]
+    },
+    {
+      "name": "actuator_feedback",
+      "title": "Actuator feedback",
+      "apid": 304,
+      "rate": {"kind": "cycles", "period": 2},
+      "description": "Measured gimbal positions from the gimbal position sensors (`GimbalFeedbackModel`).",
+      "fields": [
+        {"name": "engines", "type": "record:feedback_engine", "count": 3, "description": "per engine measured gimbal position"}
+      ]
+    },
+    {
+      "name": "gnss",
+      "title": "GNSS",
+      "apid": 320,
+      "rate": {"kind": "onNewGnssFix", "nominalHz": 10},
+      "description": "The latest receiver solution as the flight computer received it.",
+      "fields": [
+        {"name": "fixType", "type": "u8", "enum": "gnssFixType", "description": "fix type (`fsw::GnssFixType`)"},
+        {"name": "satellitesUsed", "type": "u8", "description": "satellites in the solution"},
+        {"name": "satellitesVisible", "type": "u8", "description": "satellites visible"},
+        {"name": "pad", "type": "pad", "count": 1},
+        {"name": "fixTime", "type": "f64", "unit": "s", "description": "time of validity, flight computer time"},
+        {"name": "latitude", "type": "f64", "unit": "rad", "description": "WGS-84 geodetic, antenna"},
+        {"name": "longitude", "type": "f64", "unit": "rad", "description": "east positive"},
+        {"name": "height", "type": "f64", "unit": "m", "description": "ellipsoidal"},
+        {"name": "velocity", "type": "f32", "count": 3, "unit": "m/s", "description": "east, north, up at the antenna"},
+        {"name": "horizontalSigma", "type": "f32", "unit": "m", "description": "receiver-reported 1 sigma"},
+        {"name": "verticalSigma", "type": "f32", "unit": "m", "description": "receiver-reported 1 sigma"}
+      ]
+    }
+  ]
+}

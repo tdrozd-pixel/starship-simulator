@@ -7,118 +7,59 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%276%27 y=%272%27 width=%274%27 height=%2712%27 fill=%27%2335d7ff%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../vendor/uplot/uPlot.min.css">
 <link rel="stylesheet" href="gnc.css">
-<script type="importmap">{ "imports": { "three": "../vendor/three/three.module.js", "uplot": "../vendor/uplot/uPlot.esm.js" } }</script>
+<script type="importmap">{ "imports": { "uplot": "../vendor/uplot/uPlot.esm.js" } }</script>
 </head>
 <body>
 <header id="bar">
   <div class="pos">GNC</div>
   <div class="met" data-k="met">T+--:--.-</div>
+  <div id="attitude-mini" title="Interpolated NAV attitude: pitch and roll">
+    <canvas id="attitude-mini-canvas" aria-label="Pitch and roll attitude indicator"></canvas>
+  </div>
   <div class="modebox">
     <span class="badge" id="mode-badge" data-k="mode">--</span>
     <div class="tl" title="Flight computer mode timeline (onboard time)"><canvas id="timeline"></canvas></div>
   </div>
-  <div class="link">
-    <span>RUN <b data-k="run">#-</b></span>
-    <span>FRAMES/S <b data-k="linkFps">--</b></span>
-    <span>LOSS <b data-k="linkLoss">--</b>%</span>
-    <span>LATENCY <b data-k="linkLat">--</b> ms</span>
-    <span id="conn" class="badge amber">CONNECTING</span>
+  <div class="pop-anchor">
+    <button class="chip" id="regime-btn" aria-haspopup="true" aria-expanded="false" title="Flight regime (phase of flight)">PHASE <b id="regime-label">--</b> &#9662;</button>
+    <div class="pop" id="regime-pop" hidden></div>
   </div>
-  <div class="stale" id="stale"></div>
-</header>
-
-<main id="grid">
-  <section class="panel" id="p-vehicle">
-    <h2>VEHICLE (ESTIMATED ATTITUDE)</h2>
-    <div class="vehicle">
-      <canvas id="ship"></canvas>
-      <table class="kv">
-        <tr><td>TILT</td><td><span data-k="tilt">--</span> deg</td></tr>
-        <tr><td>ATT X</td><td><span data-k="attX">--</span> deg</td></tr>
-        <tr><td>ATT Y</td><td><span data-k="attY">--</span> deg</td></tr>
-        <tr><td>ATT Z</td><td><span data-k="attZ">--</span> deg</td></tr>
-        <tr><td>RATE X</td><td><span data-k="rateX">--</span> deg/s</td></tr>
-        <tr><td>RATE Y</td><td><span data-k="rateY">--</span> deg/s</td></tr>
-        <tr><td>RATE Z</td><td><span data-k="rateZ">--</span> deg/s</td></tr>
-      </table>
-    </div>
-    <div class="note">Solid: measured gimbal. Ghost: commanded. Inset: nozzles from the side.</div>
-  </section>
-
-  <section class="panel" id="p-gimbal">
-    <h2>ENGINE GIMBALS (+/-15 deg)</h2>
-    <div class="gimbals">
-      <div class="gbox"><div class="gname">ENGINE 1</div><canvas data-g="0"></canvas><div class="gval" data-gv="0"></div></div>
-      <div class="gbox"><div class="gname">ENGINE 2</div><canvas data-g="1"></canvas><div class="gval" data-gv="1"></div></div>
-      <div class="gbox"><div class="gname">ENGINE 3</div><canvas data-g="2"></canvas><div class="gval" data-gv="2"></div></div>
-    </div>
-    <div class="note"><span class="key dot"></span> measured <span class="key ring"></span> commanded <span class="amber-t">amber: feedback invalid</span></div>
-  </section>
-
-  <section class="panel" id="p-map">
-    <h2>POSITION (TOP-DOWN, PAD CENTERED)</h2>
-    <canvas id="map"></canvas>
-    <div class="note"><span class="c-cyan">nav estimate</span> <span class="c-amber">raw GNSS</span> <span class="c-mag">setpoint</span> <span class="c-green">align tolerance <b data-k="cfgTol">--</b> m</span> pad circle: placeholder</div>
-  </section>
-
-  <section class="panel" id="p-gnss">
-    <h2>GNSS</h2>
-    <table class="kv">
-      <tr><td>FIX</td><td data-k="gnssFix">--</td></tr>
-      <tr><td>SATS USED / VISIBLE</td><td data-k="gnssSats">--</td></tr>
-      <tr><td>LATITUDE</td><td data-k="gnssLat">--</td></tr>
-      <tr><td>LONGITUDE</td><td data-k="gnssLon">--</td></tr>
-      <tr><td>HEIGHT (ELLIPSOID)</td><td><span data-k="gnssHeight">--</span> m</td></tr>
-      <tr><td>SIGMA H / V</td><td><span data-k="gnssHSigma">--</span> / <span data-k="gnssVSigma">--</span> m</td></tr>
-      <tr><td>SOLUTION AGE</td><td><span data-k="gnssAge">--</span> s</td></tr>
-    </table>
-    <h3>DELTAS FROM PAD CENTER</h3>
-    <table class="kv">
-      <tr><th></th><th>EAST</th><th>NORTH</th><th>DIST</th><th>BRG</th></tr>
-      <tr><td>RAW GNSS</td><td data-k="rawEast">--</td><td data-k="rawNorth">--</td><td data-k="rawDist">--</td><td data-k="rawBearing">--</td></tr>
-      <tr><td>NAV EST.</td><td data-k="navEast">--</td><td data-k="navNorth">--</td><td data-k="navDist">--</td><td>--</td></tr>
-    </table>
-    <div class="note">[m], bearing [deg]. Raw GNSS is at the antenna; the nav estimate is at the IMU, so they differ by the lever arm and by filter error.</div>
-  </section>
-
-  <section class="panel" id="p-fsw">
-    <h2>FLIGHT SOFTWARE</h2>
-    <table class="kv">
-      <tr><td>MODE</td><td><span data-k="fswMode">--</span> (<span data-k="fswTime">--</span> s)</td></tr>
-      <tr><td>GNSS FIXES / CYCLES</td><td><span data-k="fswFixes">--</span> / <span data-k="fswCycles">--</span></td></tr>
-      <tr><td>PROPELLANT EST.</td><td><span data-k="fswProp">--</span> kg</td></tr>
-      <tr><td>MASS EST.</td><td><span data-k="fswMass">--</span> kg</td></tr>
-      <tr><td>ALTITUDE EST. / SP</td><td><span data-k="fswAlt">--</span> / <span data-k="fswAltSp">--</span> m</td></tr>
-      <tr><td>V SPEED EST. / SP</td><td><span data-k="fswVz">--</span> / <span data-k="fswVzSp">--</span> m/s</td></tr>
-      <tr><td>HORIZ. SETPOINT E / N</td><td><span data-k="spEast">--</span> / <span data-k="spNorth">--</span> m</td></tr>
-      <tr><td>ALTIMETER</td><td><span data-k="fswRange">--</span> m <span data-k="fswRangeValid">--</span></td></tr>
-    </table>
-    <div class="lamps">
-      <span class="lamp" data-lamp="enginesOn">ENGINES ON</span>
-      <span class="lamp" data-lamp="navValid">NAV VALID</span>
-      <span class="lamp" data-lamp="translating">TRANSLATING</span>
-      <span class="lamp" data-lamp="aligned">ALIGNED</span>
-      <span class="lamp" data-lamp="gnssReady">GNSS READY</span>
-    </div>
-  </section>
-
-  <section id="charts-wrap">
-    <div class="chart-bar">
-      <h2>CHARTS (ONBOARD TIME)</h2>
-      <label>Window
+  <button class="chip" id="follow-btn" aria-pressed="true" title="Follow the flight phase automatically">FOLLOW PHASE: ON</button>
+  <span id="notice" class="notice" role="status"></span>
+  <!-- TODO(phase 10, item 48): alarm and caution banner fed by the ground service limits. -->
+  <div id="alarm-slot" class="alarm-slot" aria-live="polite"></div>
+  <div class="link">
+    <span id="conn" class="badge amber">CONNECTING</span>
+    <span>LOSS <b data-k="linkLoss">--</b>%</span>
+    <span>LAT <b data-k="linkLat">--</b> ms</span>
+  </div>
+  <div class="chip" id="gnss-chip" title="GNSS fix, satellites used/visible, horizontal distance from pad center">GNSS <b data-k="gnssChip">--</b></div>
+  <div class="pop-anchor">
+    <button class="chip" id="stale-btn" aria-haspopup="true" aria-expanded="false" title="Packet staleness">TLM --</button>
+    <div class="pop" id="stale-pop" hidden></div>
+  </div>
+  <div class="pop-anchor">
+    <button class="chip" id="menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="Menu">&#9776;</button>
+    <div class="pop" id="menu" hidden>
+      <label>Chart window
         <select id="win" aria-label="Chart window">
           <option value="30">30 s</option><option value="60" selected>60 s</option><option value="120">120 s</option>
         </select>
       </label>
       <label>Gimbal engine
         <select id="eng" aria-label="Gimbal chart engine">
-          <option value="all">all</option><option value="0">1</option><option value="1">2</option><option value="2">3</option>
+          <option value="0" selected>1</option><option value="1">2</option><option value="2">3</option><option value="all">all</option>
         </select>
       </label>
+      <label class="check"><input type="checkbox" id="perf-toggle"> Performance readout</label>
+      <button id="clear-btn">Clear history</button>
+      <div class="note">RUN <b data-k="run">#-</b></div>
     </div>
-    <div id="charts"></div>
-  </section>
-</main>
+  </div>
+</header>
+
+<nav id="tabs" role="tablist" aria-label="Console screens"></nav>
+<main id="screen-host"></main>
 <script type="module" src="../js/gnc/gncMain.js"></script>
 </body>
 </html>

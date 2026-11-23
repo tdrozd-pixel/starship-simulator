@@ -153,6 +153,8 @@ def main():
         # 5. GNC console: Python-packed packet cross-check, then page smoke with injected frames.
         gnc_checks.cross_check(page, fails)
         gnc_checks.smoke(browser, base, fails)
+        gnc_checks.screens(browser, base, fails)
+        gnc_checks.perf(browser, base, fails)
         browser.close()
     srv.shutdown()
     if fails:

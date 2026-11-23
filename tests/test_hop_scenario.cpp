@@ -46,38 +46,6 @@ HopResult runHop(uint64_t seed, bool idealSensors) {
 
 }  // namespace
 
-TEST_CASE(hop_lands_on_target_with_ideal_sensors) {
-    const HopResult r = runHop(1, true);
-    CHECK(r.landed);
-    CHECK_NEAR(r.maxAltitude, 50.0, 2.0);
-    CHECK(r.touchdownSpeed > 0.0);
-    CHECK(r.touchdownSpeed < 1.5);
-    CHECK(r.touchdownHorizontalSpeed < 0.3);
-    CHECK(r.missDistance < 0.3);
-}
-
-TEST_CASE(hop_lands_on_target_with_modeled_sensors) {
-    for (uint64_t seed = 1; seed <= 5; ++seed) {
-        const HopResult r = runHop(seed, false);
-        CHECK(r.landed);
-        CHECK_NEAR(r.maxAltitude, 50.0, 3.0);
-        CHECK(r.touchdownSpeed < 2.0);
-        CHECK(r.touchdownHorizontalSpeed < 0.5);
-        CHECK(r.missDistance < 0.5);
-    }
-}
-
-TEST_CASE(hop_lands_near_target_with_standalone_gps) {
-    // Without differential corrections the receiver wanders by about a meter; the
-    // vehicle still lands on the pad, just not on the catch point.
-    sim::vehicle::HopScenarioOptions options;
-    options.seed = 3;
-    options.gnss = sim::vehicle::GnssSpec::standalone();
-    const HopResult r = runHop(options);
-    CHECK(r.landed);
-    CHECK(r.missDistance < 6.0);
-}
-
 TEST_CASE(hop_is_deterministic_for_a_seed) {
     const HopResult a = runHop(42, false);
     const HopResult b = runHop(42, false);

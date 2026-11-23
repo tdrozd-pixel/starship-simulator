@@ -124,7 +124,6 @@ const char* toString(HopMode mode) {
         case HopMode::Prelaunch: return "Prelaunch";
         case HopMode::Ignition: return "Ignition";
         case HopMode::Ascent: return "Ascent";
-        case HopMode::Hover: return "Hover";
         case HopMode::Descent: return "Descent";
         case HopMode::FinalDescent: return "FinalDescent";
         case HopMode::Landed: return "Landed";
@@ -328,6 +327,10 @@ void HopFlightComputer::updateNavigation(double t, double dt) {
     }
 }
 
+double HopFlightComputer::horizontalError() const {
+    return std::hypot(horizontalTarget_[0] - horizontal_.east(), horizontalTarget_[1] - horizontal_.north());
+}
+
 bool HopFlightComputer::alignedOverTarget() const {
     const double errEast = horizontalTarget_[0] - horizontal_.east();
     const double errNorth = horizontalTarget_[1] - horizontal_.north();
@@ -481,32 +484,31 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
                 horizontalTarget_[0] = 0.0;
                 horizontalTarget_[1] = 0.0;
             }
+            // No hover: at the apex the vehicle turns straight into the descent.
             if (altitudeSetpoint_ >= config_.targetAltitude && std::abs(alt - config_.targetAltitude) < 1.0) {
-                enter(HopMode::Hover);
+                translating_ = true;
+                horizontalTarget_[0] = 0.0;
+                horizontalTarget_[1] = 0.0;
+                enter(HopMode::Descent);
             }
             break;
         }
 
-        case HopMode::Hover:
-            translating_ = true;
-            horizontalTarget_[0] = 0.0;
-            horizontalTarget_[1] = 0.0;
-            altitudeSetpoint_ = config_.targetAltitude;
-            velocitySetpoint_ = std::clamp(config_.altitudeKp * (altitudeSetpoint_ - alt),
-                                           -config_.maxSinkRate, config_.maxClimbRate);
-            velocitySetpoint_ = std::min(velocitySetpoint_, maxClimbRateToStopWithin(config_.targetAltitude - alt));
-            throttle_ = computeThrottle(velocitySetpoint_, dt);
-            // TODO(phase 9, item 47): divert or abort if alignment never comes (propellant margin).
-            if (t - modeStartTime_ >= config_.hoverDuration && alignedOverTarget()) {
-                enter(HopMode::Descent);
-            }
-            break;
-
         case HopMode::Descent: {
-            altitudeSetpoint_ = std::max(config_.finalDescentAltitude, altitudeSetpoint_ - config_.descentRate * dt);
-            const double feedforward = (altitudeSetpoint_ > config_.finalDescentAltitude) ? -config_.descentRate : 0.0;
-            velocitySetpoint_ = std::clamp(config_.altitudeKp * (altitudeSetpoint_ - alt) + feedforward,
-                                           -config_.maxSinkRate, config_.maxClimbRate);
+            // Propellant-efficient descent: fall as fast as the vehicle can still stop
+            // from (a braking profile, the same physics as a hoverslam), correcting the
+            // position error on the way down. The sink rate is also capped so the
+            // remaining height cannot run out before the horizontal error is nulled.
+            translating_ = true;
+            const double height = std::max(0.0, alt - config_.finalDescentAltitude);
+            const double profile = std::sqrt(2.0 * maxDescentBraking() * height);
+            // Alignment gate: the lowest height allowed grows with the horizontal error,
+            // so a vehicle that is still far off slows down instead of arriving off target.
+            const double gateHeight = config_.alignmentGateSlope * horizontalError();
+            const double gated = std::max(0.0, height - gateHeight) / config_.alignmentGateTime;
+            const double sink = std::min({profile, gated, config_.maxSinkRate}) + config_.finalDescentRate;
+            altitudeSetpoint_ = config_.finalDescentAltitude;
+            velocitySetpoint_ = -sink;
             throttle_ = computeThrottle(velocitySetpoint_, dt);
             if (alt < config_.finalDescentAltitude + 0.5) {
                 enter(HopMode::FinalDescent);
@@ -516,7 +518,9 @@ void HopFlightComputer::updateModeLogic(double t, double dt) {
 
         case HopMode::FinalDescent:
             altitudeSetpoint_ = 0.0;
-            velocitySetpoint_ = -config_.finalDescentRate;
+            // Slow to a stop above the target if the horizontal error is still large.
+            velocitySetpoint_ = -config_.finalDescentRate *
+                                std::clamp(1.0 - horizontalError() / config_.finalAlignError, 0.0, 1.0);
             throttle_ = computeThrottle(velocitySetpoint_, dt);
             if (alt < config_.touchdownAltitude && std::abs(vel) < config_.touchdownSpeed) {
                 touchdownTimer_ += dt;
@@ -557,6 +561,15 @@ double HopFlightComputer::computeThrottle(double velocitySetpoint, double dt) {
     // Only the vertical component of a tilted thrust vector holds up the weight.
     const double cosTilt = std::max(0.7, upComponentOfBodyZ(attitudeFrom(attitude_)));
     return throttleForThrust(massEstimate() * (config_.gravity + accelCommand) / cosTilt);
+}
+
+double HopFlightComputer::maxDescentBraking() const {
+    // Net upward deceleration at full throttle, derated by the margin so the throttle
+    // loop keeps authority.
+    const double maxThrust =
+        kEngineCount * std::max(0.0, config_.vacuumThrust - config_.ambientPressure * config_.nozzleExitArea);
+    const double net = maxThrust / massEstimate() - config_.gravity;
+    return std::max(0.1, net) * config_.descentBrakingMargin;
 }
 
 double HopFlightComputer::maxClimbRateToStopWithin(double distance) const {

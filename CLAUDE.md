@@ -2,17 +2,17 @@
 
 Engineering-grade simulation of SpaceX Starship (V3), flown by real flight software (in this repo) that only sees simulated sensors, run as a LAN **mission control simulation**: `sim_server` streams to browser clients where people take console positions. Realism over fun: no scores, no shortcuts, no truth on the consoles. Portfolio project, so code quality, tests and documented assumptions matter. Owner: Taras Drozd (knows Python and Java best; this is C++20).
 
-Current status: a Starship V3 **Ship in hop configuration** (three sea-level Raptor 3s, estimated mass properties) lifts off, climbs to 50 m, diverts to Starbase Pad 2 using simulated GNSS (WGS-84) plus IMU, and lands on the pad center (placeholder for the catch point). Sensors: IMU, radar altimeter, GNSS, with wind. `sim_server` serves a three.js outside view over the truth stream (`/`) and the first console, GNC (`/gnc/`), fed only by CCSDS telemetry the flight computer downlinks through a placeholder comms model (`/ws/telemetry`). No sessions, roles, commanding or Yamcs/Open MCT yet.
+Current status: a Starship V3 **Ship in hop configuration** (three sea-level Raptor 3s, estimated mass properties) lifts off, climbs to 50 m, then descends on a fast braking profile (no hover) while diverting to Starbase Pad 2 using simulated GNSS (WGS-84) plus IMU, and lands on the pad center (placeholder for the catch point). Sensors: IMU, radar altimeter, GNSS, with wind. `sim_server` serves a three.js outside view over the truth stream (`/`) and the first console, GNC (`/gnc/`), fed only by CCSDS telemetry the flight computer downlinks through a placeholder comms model (`/ws/telemetry`). The ground segment is fully custom (no Yamcs, no Open MCT). No sessions, roles, commanding, archive or limit alarms yet.
 
 ## More context (read when relevant)
 
 | File | What |
 |---|---|
 | `docs/build_order.md` | The 51-item build order with status. `TODO(phase N, item M)` refers to it. Update Status as work lands. |
-| `docs/architecture.md` | Rate plan, planned runtime architecture (sessions, crew, Yamcs, Open MCT, streams), rendering and mission control plans |
+| `docs/architecture.md` | Rate plan, planned runtime architecture (sessions, crew, streams), the custom ground segment, rendering plan |
 | `docs/vehicle_reference.md` | Starship V3 public facts |
 | `docs/protocol/*.md` | Versioned wire protocols (treat as contracts) |
-| `docs/telemetry/*.md` | Telemetry dictionary: CCSDS APIDs and packet layouts (seed of the XTCE database) |
+| `telemetry/dictionary.json` | Single source of truth for downlinked CCSDS packets. Flight packet code, console decoders and `docs/telemetry/gnc_packets.md` are generated from it: edit the dictionary, never the generated files |
 | `<dir>/CLAUDE.md` | Per-module rules: `flight_sw`, `sim_core`, `sim_vehicle`, `sim_server`, `web`, `tests`, `tools` |
 | `README.md` | Human-facing overview and run commands |
 
@@ -25,6 +25,8 @@ cmake -S . -B build && cmake --build build --config Release
 ctest --test-dir build -C Release          # or build/tests/Release/sim_tests.exe [filter]
 python -I web/tests/run_web_tests.py       # web unit tests (Playwright)
 python -I tools/e2e/server_smoke.py        # end-to-end server checks
+python -I tools/telemetry/test_generate.py # telemetry generator tests
+python -I tools/telemetry/generate.py --check   # generated telemetry files up to date
 ```
 
 All tests must pass before any commit. Use `--host 127.0.0.1` for `sim_server` in tests and agents (avoids the Windows firewall prompt). `run-server` skill launches it for a demo.
@@ -48,6 +50,10 @@ Base rate 1 kHz, sim time is `step * dt`, never a clock. Each step: (1) `prepare
 - **Data-oriented layout** for repeated things (39 engines, ~18,000 tiles): structure of arrays.
 - **Pacing lives only in `Pacer`.**
 - **Vehicle numbers** live in parameters files with a source comment (link, estimate, or derived). SpaceX internal data is not public; never imply otherwise.
+
+## Telemetry dictionary
+
+Packet layouts live only in `telemetry/dictionary.json`. After editing it run `python -I tools/telemetry/generate.py` (writes `flight_sw/include/fsw/TelemetryPackets.hpp`, `web/js/gnc/gncPackets.generated.js`, `docs/telemetry/gnc_packets.md`); never hand-edit those. Generated files are committed so the C++ build needs no Python. Update the golden in `tests/test_telemetry.cpp` only when the wire bytes are meant to change.
 
 ## Conventions
 

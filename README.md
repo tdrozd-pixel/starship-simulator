@@ -6,7 +6,7 @@ It is built as a **mission control simulation**: one machine runs `sim_server`, 
 
 ## Status
 
-Early. The framework (fixed-step executive, rate-group scheduler, bus, RK4, deterministic seeding, real-time pacing, logging) flies a **Starship V3 Ship in hop configuration** on its three sea-level Raptor 3 engines: it climbs to 50 m, diverts about 36 m using simulated GPS (WGS-84 coordinates) fused with the IMU, and lands on the center of Starbase Pad 2, the stand-in for a tower catch. Mass properties are estimates where SpaceX has not published numbers. `sim_server` runs it in real time and serves a browser 3D outside view over the LAN. Consoles, sessions and telemetry downlink come next. See [docs/build_order.md](docs/build_order.md).
+Early. The framework (fixed-step executive, rate-group scheduler, bus, RK4, deterministic seeding, real-time pacing, logging) flies a **Starship V3 Ship in hop configuration** on its three sea-level Raptor 3 engines: it climbs to 50 m, diverts about 36 m using simulated GPS (WGS-84 coordinates) fused with the IMU while falling back on a braking profile (no hover), and lands on the center of Starbase Pad 2, the stand-in for a tower catch. Mass properties are estimates where SpaceX has not published numbers. `sim_server` runs it in real time and serves a browser 3D outside view over the LAN and a GNC console fed only by downlinked CCSDS telemetry. More consoles, sessions and commanding come next. See [docs/build_order.md](docs/build_order.md).
 
 ## Build
 
@@ -40,6 +40,8 @@ build/sim_server/sim_server                    # LAN: binds 0.0.0.0:8080, prints
 ctest --test-dir build -C Release              # C++ (or build/tests/sim_tests [filter])
 python -I web/tests/run_web_tests.py           # web client (Playwright, headless Chromium/Edge)
 python -I tools/e2e/server_smoke.py            # end-to-end against the real server
+python -I tools/telemetry/test_generate.py     # telemetry dictionary generator
+python -I tools/telemetry/generate.py --check  # generated telemetry files are current
 ```
 
 ## Layout
@@ -53,7 +55,8 @@ python -I tools/e2e/server_smoke.py            # end-to-end against the real ser
 | `sim_server/` | Real-time LAN server (the only networking code) |
 | `web/` | Browser clients, plain ES modules, no build step |
 | `docs/` | [Architecture](docs/architecture.md), [build order](docs/build_order.md), [vehicle reference](docs/vehicle_reference.md), [protocols](docs/protocol/) |
-| `tests/`, `tools/e2e/` | C++ unit tests and end-to-end tests |
+| `telemetry/` | `dictionary.json`: the single source of truth for downlinked packets (flight code, console decoders and docs are generated from it by `tools/telemetry/`) |
+| `tests/`, `tools/` | C++ unit tests, end-to-end tests and the telemetry generator |
 
 ## Notes
 

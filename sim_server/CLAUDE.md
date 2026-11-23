@@ -8,7 +8,7 @@ Real-time sim process on the LAN. The only code in the repo that does networking
 - `WsEndpoint`: per-client bounded queues (essential vs droppable items), one sender thread per client, close/join handling.
 - `TelemetryRing`, `TelemetryFrame`: SPSC ring of downlinked CCSDS packets (`SimRunner` is also the `TelemetrySink`) and the ground frame encoding of `docs/protocol/telemetry_stream.md`. Telemetry clients get hello plus the current value table (latest frame per APID) on join.
 - `WireFormat`, `JsonMessages`: truth stream encoding. The contract is `docs/protocol/truth_stream.md`; change the doc (and bump its version) with the code.
-- Planned: commands, sessions and roles, command log, Yamcs (see `docs/architecture.md`).
+- Planned: ground service module (limits and alarms, per-run archive, history queries, command gateway), sessions and roles, command log (see `docs/architecture.md`).
 
 Rules: the sim thread never blocks on networking. Truth snapshots go only to the outside view and HUD, never to consoles. Bind to the LAN only. Tests and agents use `--host 127.0.0.1`.
 

@@ -12,7 +12,7 @@
 namespace fsw {
 
 // Hop with a divert: ignite, climb, translate to the landing target given as
-// WGS-84 coordinates, hover over it, descend, land on it.
+// WGS-84 coordinates, then descend on a braking profile while correcting position.
 //
 // Vertical cascade:
 //   altitude error -> velocity setpoint (P + setpoint-rate feedforward)
@@ -28,8 +28,13 @@ struct HopConfig {
     int gnssFixesRequired = 10;       // valid fixes before ignition is allowed
     double targetAltitude = 50.0;     // [m]
     double ascentRate = 5.0;          // [m/s] setpoint ramp
-    double hoverDuration = 1.0;       // [s] minimum
-    double descentRate = 10.0;         // [m/s] setpoint ramp
+    // Fraction of the full-throttle net deceleration the descent braking profile plans to use.
+    double descentBrakingMargin = 0.6;
+    // Descent gate: do not get lower than slope * horizontal error [m of height per m of
+    // error]; closing on that limit takes at least gateTime seconds.
+    double alignmentGateSlope = 3.0;
+    double alignmentGateTime = 2.0;      // [s]
+    double finalAlignError = 1.0;        // [m] final descent stops above this error
     double finalDescentAltitude = 2.0;  // [m] switch to constant-rate descent
     double finalDescentRate = 1.0;    // [m/s]
     double liftoffAltitude = 0.3;     // [m] estimate above this counts as liftoff
@@ -45,9 +50,9 @@ struct HopConfig {
 
     // Landing target (mission data loaded before flight).
     GeodeticPosition target;
-    double translateAltitude = 20.0;     // [m] hold over the liftoff point below this
-    double landingAlignTolerance = 1;  // [m] horizontal error allowed before descent
-    double landingAlignSpeed = 1;      // [m/s] horizontal speed allowed before descent
+    double translateAltitude = 2.0;     // [m] hold over the liftoff point below this
+    double landingAlignTolerance = 10;  // [m] horizontal error allowed before descent
+    double landingAlignSpeed = 10;      // [m/s] horizontal speed allowed before descent
 
     // Vehicle knowledge the flight software is given (not read from the sim).
     double dryMass = 0.0;            // [kg]
@@ -74,7 +79,7 @@ struct HopConfig {
 
     double altitudeKp = 0.8;  // [1/s]
     double maxClimbRate = 6.0;
-    double maxSinkRate = 4.0;
+    double maxSinkRate = 40.0;
     PidGains velocityGains{2.0, 0.6, 0.0, -4.0, 6.0, 2.0};  // output: accel [m/s^2]
     // The Ship is slow in attitude (lever arm ~9.5 m against a ~10 m radius of
     // gyration; a gimbal deflection first pushes the base the wrong way), so the
@@ -99,7 +104,8 @@ enum class HopMode : int {
     Prelaunch = 0,
     Ignition = 1,
     Ascent = 2,
-    Hover = 3,
+    // 3 was Hover, removed: the hop goes from Ascent straight into Descent. The value
+    // stays reserved so the downlinked mode numbers do not change.
     Descent = 4,
     FinalDescent = 5,
     Landed = 6,
@@ -129,7 +135,9 @@ private:
     double massEstimate() const;
     void downlinkTelemetry(double t);
     double maxClimbRateToStopWithin(double distance) const;
+    double maxDescentBraking() const;
     bool alignedOverTarget() const;
+    double horizontalError() const;
 
     Hal& hal_;
     HopConfig config_;

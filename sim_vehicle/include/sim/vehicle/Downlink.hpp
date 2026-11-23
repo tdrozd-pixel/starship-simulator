@@ -45,8 +45,8 @@ private:
 // TODO(phase 5, item 29): Starlink links, ground stations; plasma blackout is item 26.
 struct DownlinkSpec {
     double bitRate = 2.0e6;          // [bit/s] placeholder
-    double latency = 0.060;          // [s] mean one-way delay, placeholder
-    double jitter = 0.010;           // [s] uniform +/- around the latency, placeholder
+    double latency = 0.020;          // [s] mean one-way delay, placeholder
+    double jitter = 0.005;           // [s] uniform +/- around the latency, placeholder
     double lossProbability = 0.001;  // per packet, placeholder
 };
 

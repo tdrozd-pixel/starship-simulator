@@ -1,4 +1,5 @@
-// Top-down position map, pad centered, north up, auto scaling. DOM/canvas only.
+// Top-down position map, pad centered, north up, auto scaling. DOM/canvas only. The trail and fixes
+// live here (collected on every screen); draw(canvas, ...) paints them on whichever canvas is shown.
 import { fitCanvas, COLORS } from './canvasUtil.js';
 import { geodeticToEnu } from './geodesy.js';
 
@@ -9,7 +10,7 @@ const TRAIL_DT = 0.2; // [s] onboard time between trail points
 const FIX_MAX = 600;
 const NICE = [10, 15, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
 
-export function createMapView(canvas) {
+export function createMapView() {
   const trail = [];
   const fixes = [];
   let lastTrailT = -Infinity, half = NICE[0];
@@ -31,7 +32,7 @@ export function createMapView(canvas) {
 
   const tmp = [0, 0, 0];
   // frame: target ENU frame or null; cfg: mission config or null; sp: {east,north} or null; cur: nav {east,north} or null.
-  function draw(frame, cfg, sp, cur) {
+  function draw(canvas, frame, cfg, sp, cur) {
     const { ctx, w, h } = fitCanvas(canvas);
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, w, h);

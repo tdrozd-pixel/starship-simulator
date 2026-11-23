@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 #include <vector>
 
 #include "TestFramework.hpp"
 #include "fsw/Ccsds.hpp"
 #include "fsw/GncTelemetry.hpp"
+#include "fsw/TelemetryPackets.hpp"
 #include "sim/vehicle/HopScenario.hpp"
 #include "sim/vehicle/Messages.hpp"
 
@@ -220,14 +222,66 @@ TEST_CASE(telemetry_stream_decodes_and_is_consistent) {
     CHECK(satsOk);
     CHECK(counts.size() == 6);
     CHECK(maxMode == 6);
-    CHECK(minLatency >= 0.045);
-    CHECK(maxLatency <= 0.085);
+    CHECK(minLatency >= 0.015);
+    CHECK(maxLatency <= 0.035);
     uint64_t totalGaps = 0;
     for (const auto& g : gaps) {
         totalGaps += g.second;
     }
     // Every gap is a lost packet (losses after the last delivered packet of an APID go unseen).
     CHECK(totalGaps <= run.lost);
+}
+
+namespace {
+
+// 64-bit FNV-1a over a byte range, continuing from `hash`.
+uint64_t fnv1a(uint64_t hash, const uint8_t* data, std::size_t length) {
+    for (std::size_t i = 0; i < length; ++i) {
+        hash ^= data[i];
+        hash *= 0x100000001B3ULL;
+    }
+    return hash;
+}
+
+}  // namespace
+
+// Pins the downlinked wire bytes of the first 0.9 s of the standard hop (seed 1, default
+// options): the vehicle is on the pad, so the bytes depend on the packet layouts, the sensor
+// models and navigation but not on guidance or control tuning. The layouts are generated from
+// telemetry/dictionary.json; this proves the generator and refactors never change a byte on
+// the wire. The cut-off is ground receive time, so a change to the placeholder link latency also moves it. Update the constants only when the dictionary, those models or the link change on purpose.
+TEST_CASE(telemetry_stream_matches_golden) {
+    constexpr uint64_t kGoldenHash = 0x848F61A5F1E532D8ULL;
+    constexpr std::size_t kGoldenCount = 151;
+    HopScenarioOptions options;
+    const Run run = runHop(options, true);
+    uint64_t hash = 0xCBF29CE484222325ULL;  // FNV offset basis
+    std::size_t count = 0;
+    for (const Captured& c : run.packets) {
+        if (c.groundTime >= 0.9) {
+            continue;
+        }
+        hash = fnv1a(hash, c.bytes.data(), c.bytes.size());
+        ++count;
+    }
+    if (hash != kGoldenHash || count != kGoldenCount) {
+        std::printf("golden: count=%zu hash=0x%016llXULL\n", count, static_cast<unsigned long long>(hash));
+    }
+    CHECK(count == kGoldenCount);
+    CHECK(hash == kGoldenHash);
+}
+
+TEST_CASE(generated_user_data_lengths_match_the_documented_lengths) {
+    namespace tm = fsw::telemetry;
+    static_assert(tm::kFswStatusApid == 0x100 && tm::kMissionConfigApid == 0x101 && tm::kNavigationApid == 0x110);
+    static_assert(tm::kGuidanceControlApid == 0x120 && tm::kActuatorFeedbackApid == 0x130 && tm::kGnssApid == 0x140);
+    const std::size_t generated[6] = {tm::kFswStatusUserDataLength,       tm::kMissionConfigUserDataLength,
+                                      tm::kNavigationUserDataLength,      tm::kGuidanceControlUserDataLength,
+                                      tm::kActuatorFeedbackUserDataLength, tm::kGnssUserDataLength};
+    const std::size_t documented[6] = {20, 36, 80, 84, 36, 56};
+    for (int i = 0; i < 6; ++i) {
+        CHECK(generated[i] == documented[i]);
+    }
 }
 
 TEST_CASE(telemetry_has_no_gaps_on_a_lossless_link) {

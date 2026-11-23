@@ -1,8 +1,8 @@
 # Telemetry stream protocol, version 1
 
-The telemetry stream carries **downlinked telemetry** from `sim_server` to console clients (the GNC console at `/gnc/`). Every packet is a CCSDS Space Packet built by the flight computer and passed through the comms model (`DownlinkModel`: bandwidth, latency, loss), so it is exactly what a ground station would receive. It never carries truth. Packet contents are defined by the telemetry dictionary, `docs/telemetry/gnc_packets.md`.
+The telemetry stream carries **downlinked telemetry** from `sim_server` to console clients (the GNC console at `/gnc/`). Every packet is a CCSDS Space Packet built by the flight computer and passed through the comms model (`DownlinkModel`: bandwidth, latency, loss), so it is exactly what a ground station would receive. It never carries truth. Packet contents are defined by the telemetry dictionary, `telemetry/dictionary.json` (documented in `docs/telemetry/gnc_packets.md`, generated from it).
 
-This is the interim ground segment until Yamcs and Open MCT (build order item 48); the packets stay the same when Yamcs takes over.
+This is the live downlink feed of the custom ground segment (`docs/architecture.md`, build order item 48). The ground service (planned) will add archive-backed history and replay on top of the same frames.
 
 ## Transport
 

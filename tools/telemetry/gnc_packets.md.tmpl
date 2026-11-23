@@ -1,0 +1,49 @@
+# GNC telemetry dictionary, version {{VERSION}}
+
+The packets the flight computer downlinks for the GNC console. This dictionary is the single source of truth, in `telemetry/dictionary.json`. This document, the flight software packet code (`flight_sw/include/fsw/TelemetryPackets.hpp`) and the console decoders (`web/js/gnc/gncPackets.generated.js`) are generated from it by `tools/telemetry/generate.py`; edit the dictionary, not the generated files. It is the contract between `flight_sw` (which builds the packets), the comms model, `sim_server` (which forwards them unchanged) and the consoles (which decode them), and the basis of the ground segment's archive and limit checking.
+
+Everything here is something the vehicle knows: flight software state, its estimates, its commands and raw sensor readings. Never truth.
+
+## Packet format
+
+CCSDS Space Packet (CCSDS 133.0-B-2), telemetry, **big-endian** (network byte order).
+
+### Primary header (6 bytes)
+
+| Bits | Field | Value |
+|---|---|---|
+| 3 | Packet version number | 0 |
+| 1 | Packet type | 0 (telemetry) |
+| 1 | Secondary header flag | 1 |
+| 11 | APID | see the table below |
+| 2 | Sequence flags | 0b11 (unsegmented) |
+| 14 | Packet sequence count | per APID, starts at 0, wraps 16383 -> 0 |
+| 16 | Packet data length | (secondary header + user data length in bytes) - 1 |
+
+### Secondary header (6 bytes): CUC time code
+
+| Bytes | Field |
+|---|---|
+| 4 | coarse time: whole seconds of flight computer time (u32) |
+| 2 | fine time: fraction of a second in units of 1/65536 s (u16) |
+
+Flight computer time is `Hal::timeSec()`, seconds since the flight computer started (the sim start). Onboard time = coarse + fine / 65536.
+
+### User data
+
+Fields follow in the order listed, with no implicit padding (explicit `pad` bytes are zero). Types: `u8`, `u16`, `u32`, `f32` (IEEE 754 single), `f64` (IEEE 754 double), all big-endian. Angles in radians, SI units. Offsets in the tables below are computed by the generator.
+
+Total packet length = 12 + user data length. Every packet is at most 256 bytes.
+
+## APIDs
+
+{{APID_TABLE}}
+
+Rates are of flight computer cycles at 100 Hz: 50 Hz packets go on even cycles, 10 Hz on every 10th cycle, 1 Hz on every 100th, starting with cycle 0. The GNSS packet goes on the first cycle that sees a new receiver solution.
+
+{{PACKET_SECTIONS}}
+## Vehicle constants the console needs
+
+Not downlinked (they are configuration): engine i sits at azimuth `engineAzimuthFirstDeg + engineAzimuthStepDeg * i` from body +x toward +y.
+
+{{CONSTANTS}}

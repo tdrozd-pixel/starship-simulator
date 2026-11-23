@@ -3,24 +3,16 @@
 #include <algorithm>
 
 #include "fsw/Ccsds.hpp"
+#include "fsw/TelemetryPackets.hpp"
 
 namespace fsw {
 namespace {
 
 using namespace ccsds;
 
-uint8_t* putF32(uint8_t* p, double value) { return p + writeF32(p, static_cast<float>(value)); }
+bool due(uint32_t cycle, uint32_t period) { return (cycle % period) == 0; }
 
-uint8_t* putF64(uint8_t* p, double value) { return p + writeF64(p, value); }
-
-uint8_t* putU8(uint8_t* p, uint8_t value) { return p + writeU8(p, value); }
-
-uint8_t* putPad(uint8_t* p, int count) {
-    for (int i = 0; i < count; ++i) {
-        *p++ = 0;
-    }
-    return p;
-}
+float toF32(double value) { return static_cast<float>(value); }
 
 }  // namespace
 
@@ -35,104 +27,108 @@ uint8_t* GncTelemetry::begin(Slot slot, uint16_t apidValue, std::size_t userLeng
 void GncTelemetry::send(Hal& hal, std::size_t userLength) { hal.downlink(buffer_, kHeaderSize + userLength); }
 
 void GncTelemetry::emit(Hal& hal, const GncTelemetryInput& in, uint32_t cycle, double time) {
-    const bool every50Hz = (cycle % 2U) == 0;
-    const bool every10Hz = (cycle % 10U) == 0;
-    const bool every1Hz = (cycle % 100U) == 0;
+    namespace tm = telemetry;
 
-    if (every10Hz) {
-        uint8_t* p = begin(kStatus, apid::kFswStatus, kFswStatusLength, time);
-        const uint8_t flags = static_cast<uint8_t>((in.enginesOn ? 1U : 0U) | (in.horizontalNavValid ? 2U : 0U) |
-                                                   (in.translating ? 4U : 0U) | (in.alignedOverTarget ? 8U : 0U) |
-                                                   (in.gnssReady ? 16U : 0U));
-        p = putU8(p, static_cast<uint8_t>(in.mode));
-        p = putU8(p, flags);
-        p += writeU16(p, static_cast<uint16_t>(std::clamp(in.gnssFixCount, 0, 65535)));
-        p += writeU32(p, cycle);
-        p = putF32(p, in.timeInMode);
-        p = putF32(p, in.propellantEstimate);
-        putF32(p, in.massEstimate);
+    if (due(cycle, tm::kFswStatusPeriodCycles)) {
+        tm::FswStatus s;
+        s.mode = static_cast<uint8_t>(in.mode);
+        s.enginesOn = in.enginesOn;
+        s.navValid = in.horizontalNavValid;
+        s.translating = in.translating;
+        s.aligned = in.alignedOverTarget;
+        s.gnssReady = in.gnssReady;
+        s.gnssFixCount = static_cast<uint16_t>(std::clamp(in.gnssFixCount, 0, 65535));
+        s.cycleCount = cycle;
+        s.timeInMode = toF32(in.timeInMode);
+        s.propellant = toF32(in.propellantEstimate);
+        s.mass = toF32(in.massEstimate);
+        tm::encode(s, begin(kStatus, apid::kFswStatus, kFswStatusLength, time));
         send(hal, kFswStatusLength);
     }
 
-    if (every1Hz) {
-        uint8_t* p = begin(kConfig, apid::kMissionConfig, kMissionConfigLength, time);
-        p = putF64(p, in.targetLatitude);
-        p = putF64(p, in.targetLongitude);
-        p = putF64(p, in.targetHeight);
-        p = putF32(p, in.targetAltitude);
-        p = putF32(p, in.landingAlignTolerance);
-        putF32(p, in.translateAltitude);
+    if (due(cycle, tm::kMissionConfigPeriodCycles)) {
+        tm::MissionConfig c;
+        c.targetLatitude = in.targetLatitude;
+        c.targetLongitude = in.targetLongitude;
+        c.targetHeight = in.targetHeight;
+        c.targetAltitude = toF32(in.targetAltitude);
+        c.alignTolerance = toF32(in.landingAlignTolerance);
+        c.translateAltitude = toF32(in.translateAltitude);
+        tm::encode(c, begin(kConfig, apid::kMissionConfig, kMissionConfigLength, time));
         send(hal, kMissionConfigLength);
     }
 
-    if (every50Hz) {
-        uint8_t* p = begin(kNav, apid::kNavigation, kNavigationLength, time);
-        for (double q : in.attitude) {
-            p = putF32(p, q);
+    if (due(cycle, tm::kNavigationPeriodCycles)) {
+        tm::Navigation n;
+        for (std::size_t i = 0; i < n.attitude.size(); ++i) {
+            n.attitude[i] = toF32(in.attitude[i]);
         }
-        for (double w : in.imu.angularRate) {
-            p = putF32(p, w);
+        for (std::size_t i = 0; i < 3; ++i) {
+            n.angularRate[i] = toF32(in.imu.angularRate[i]);
+            n.specificForce[i] = toF32(in.imu.specificForce[i]);
         }
-        for (double f : in.imu.specificForce) {
-            p = putF32(p, f);
-        }
-        p = putF32(p, in.altitude);
-        p = putF32(p, in.verticalVelocity);
-        p = putF32(p, in.altimeter.range);
-        p = putU8(p, in.altimeter.valid ? 1 : 0);
-        p = putPad(p, 3);
-        p = putF32(p, in.east);
-        p = putF32(p, in.north);
-        p = putF32(p, in.velocityEast);
-        p = putF32(p, in.velocityNorth);
-        p = putF32(p, in.accelBiasEast);
-        putF32(p, in.accelBiasNorth);
+        n.altitude = toF32(in.altitude);
+        n.verticalVelocity = toF32(in.verticalVelocity);
+        n.altimeterRange = toF32(in.altimeter.range);
+        n.altimeterValid = in.altimeter.valid;
+        n.east = toF32(in.east);
+        n.north = toF32(in.north);
+        n.velocityEast = toF32(in.velocityEast);
+        n.velocityNorth = toF32(in.velocityNorth);
+        n.accelBiasEast = toF32(in.accelBiasEast);
+        n.accelBiasNorth = toF32(in.accelBiasNorth);
+        tm::encode(n, begin(kNav, apid::kNavigation, kNavigationLength, time));
         send(hal, kNavigationLength);
+    }
 
-        p = begin(kGuidance, apid::kGuidanceControl, kGuidanceControlLength, time);
-        p = putF32(p, in.altitudeSetpoint);
-        p = putF32(p, in.velocitySetpoint);
-        p = putF32(p, in.eastSetpoint);
-        p = putF32(p, in.northSetpoint);
-        p = putF32(p, in.eastAccelCommand);
-        p = putF32(p, in.northAccelCommand);
-        for (double e : in.attitudeError) {
-            p = putF32(p, e);
+    if (due(cycle, tm::kGuidanceControlPeriodCycles)) {
+        tm::GuidanceControl g;
+        g.altitudeSetpoint = toF32(in.altitudeSetpoint);
+        g.velocitySetpoint = toF32(in.velocitySetpoint);
+        g.eastSetpoint = toF32(in.eastSetpoint);
+        g.northSetpoint = toF32(in.northSetpoint);
+        g.eastAccelCommand = toF32(in.eastAccelCommand);
+        g.northAccelCommand = toF32(in.northAccelCommand);
+        for (std::size_t i = 0; i < 3; ++i) {
+            g.attitudeError[i] = toF32(in.attitudeError[i]);
         }
-        for (const EngineCommand& e : in.command.engines) {
-            p = putU8(p, e.on ? 1 : 0);
-            p = putPad(p, 3);
-            p = putF32(p, e.throttle);
-            p = putF32(p, e.gimbalPitch);
-            p = putF32(p, e.gimbalYaw);
+        for (std::size_t i = 0; i < g.engines.size(); ++i) {
+            const EngineCommand& e = in.command.engines[i];
+            g.engines[i].on = e.on;
+            g.engines[i].throttle = toF32(e.throttle);
+            g.engines[i].pitch = toF32(e.gimbalPitch);
+            g.engines[i].yaw = toF32(e.gimbalYaw);
         }
+        tm::encode(g, begin(kGuidance, apid::kGuidanceControl, kGuidanceControlLength, time));
         send(hal, kGuidanceControlLength);
+    }
 
-        p = begin(kActuators, apid::kActuatorFeedback, kActuatorFeedbackLength, time);
-        for (int i = 0; i < kEngineCount; ++i) {
-            p = putU8(p, in.gimbal.valid[i] ? 1 : 0);
-            p = putPad(p, 3);
-            p = putF32(p, in.gimbal.pitch[i]);
-            p = putF32(p, in.gimbal.yaw[i]);
+    if (due(cycle, tm::kActuatorFeedbackPeriodCycles)) {
+        tm::ActuatorFeedback a;
+        for (std::size_t i = 0; i < a.engines.size(); ++i) {
+            a.engines[i].valid = in.gimbal.valid[i];
+            a.engines[i].pitch = toF32(in.gimbal.pitch[i]);
+            a.engines[i].yaw = toF32(in.gimbal.yaw[i]);
         }
+        tm::encode(a, begin(kActuators, apid::kActuatorFeedback, kActuatorFeedbackLength, time));
         send(hal, kActuatorFeedbackLength);
     }
 
-    if (in.gnssNew) {
-        uint8_t* p = begin(kGnssSlot, apid::kGnss, kGnssLength, time);
-        p = putU8(p, static_cast<uint8_t>(in.gnss.fixType));
-        p = putU8(p, static_cast<uint8_t>(std::clamp(in.gnss.satellitesUsed, 0, 255)));
-        p = putU8(p, static_cast<uint8_t>(std::clamp(in.gnss.satellitesVisible, 0, 255)));
-        p = putPad(p, 1);
-        p = putF64(p, in.gnss.fixTime);
-        p = putF64(p, in.gnss.latitude);
-        p = putF64(p, in.gnss.longitude);
-        p = putF64(p, in.gnss.height);
-        for (double v : in.gnss.velocityEnu) {
-            p = putF32(p, v);
+    if (tm::kGnssOnNewFix && in.gnssNew) {
+        tm::Gnss g;
+        g.fixType = static_cast<uint8_t>(in.gnss.fixType);
+        g.satellitesUsed = static_cast<uint8_t>(std::clamp(in.gnss.satellitesUsed, 0, 255));
+        g.satellitesVisible = static_cast<uint8_t>(std::clamp(in.gnss.satellitesVisible, 0, 255));
+        g.fixTime = in.gnss.fixTime;
+        g.latitude = in.gnss.latitude;
+        g.longitude = in.gnss.longitude;
+        g.height = in.gnss.height;
+        for (std::size_t i = 0; i < 3; ++i) {
+            g.velocity[i] = toF32(in.gnss.velocityEnu[i]);
         }
-        p = putF32(p, in.gnss.horizontalSigma);
-        putF32(p, in.gnss.verticalSigma);
+        g.horizontalSigma = toF32(in.gnss.horizontalSigma);
+        g.verticalSigma = toF32(in.gnss.verticalSigma);
+        tm::encode(g, begin(kGnssSlot, apid::kGnss, kGnssLength, time));
         send(hal, kGnssLength);
     }
 }

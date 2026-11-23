@@ -25,7 +25,9 @@ Heavy physics is precomputed offline into tables: aero coefficients (CFD with Op
 
 ## Runtime architecture (planned)
 
-Built so far (interim): the flight computer downlinks CCSDS packets through a placeholder link model, `sim_server` forwards them on `/ws/telemetry` (`docs/protocol/telemetry_stream.md`), and a GNC console at `/gnc/` decodes them directly. When Yamcs arrives, the vehicle side and the packet dictionary (`docs/telemetry/gnc_packets.md`) stay; Yamcs takes over from the WebSocket forwarding.
+The ground segment is **fully custom, in-house tooling**: no Yamcs, no XTCE, no Open MCT. Reasons: realism is in the data path (CCSDS packets, link effects, limit checking, an archive, commands through an uplink), not in a UI framework; the displays are purpose-built per discipline, like real consoles (fixed layouts, no drag-and-drop composition); and public reports of SpaceX's own tooling describe in-house web UIs (the 2020 SpaceX software team AMA, as summarized by [Hackaday](https://hackaday.com/2020/06/08/displaying-html-interfaces-and-managing-network-nodes-in-space) and [InfoQ](https://www.infoq.com/news/2020/06/javascript-spacex-dragon/)), with no public evidence of off-the-shelf frameworks.
+
+Built so far: the flight computer downlinks CCSDS packets (layouts generated from `telemetry/dictionary.json`) through a placeholder link model, `sim_server` forwards them on `/ws/telemetry` (`docs/protocol/telemetry_stream.md`), and a GNC console at `/gnc/` decodes them. Next: the ground service, the shared console kit and the other positions (see "Ground segment" below).
 
 Flight controllers at consoles watch live telemetry and make real-time decisions, with visuals alongside. One machine runs the server; everyone else joins from a browser on the same local network. The sim is the authority and everything else is a client.
 
@@ -40,14 +42,14 @@ Flight controllers at consoles watch live telemetry and make real-time decisions
         | downlink (via comms model)        ^ uplink (via comms model)
         v CCSDS packets                     | commands                  <--- supervisor station (browser,
   +------------------------------------------------------------------+         privileged: faults, time, weather)
-  |  Yamcs (XTCE telemetry/command database, archive, web API)       |
+  |  ground service (decode, limits/alarms, archive, command gateway)|
   +------------------------------------------------------------------+
-        | WebSocket                         ^ commands
+        | WebSocket (live + history)        ^ commands
         v                                   |
-     Open MCT consoles in the browser: FLIGHT, PROP, GNC, POWER, THERMAL, STRUCT, COMMS, ...
+     custom web consoles (shared console kit): FLIGHT, PROP, GNC, POWER, THERMAL, STRUCT, COMMS, ...
 ```
 
-- **`sim_server` is a standalone real-time process.** It owns sim time and truth, and `Pacer` still sets the pace. A client crashing, stalling, losing Wi-Fi or dropping frames never affects the sim. A client that reconnects catches up from current state (and from the Yamcs archive for history), not by asking the sim to wait.
+- **`sim_server` is a standalone real-time process.** It owns sim time and truth, and `Pacer` still sets the pace. A client crashing, stalling, losing Wi-Fi or dropping frames never affects the sim. A client that reconnects catches up from current state (and from the ground service archive for history), not by asking the sim to wait.
 - **Browser first.** Every client is a web page served on the LAN: lobby, consoles, 3D views, HUD, supervisor. Nothing to install on participant laptops; any OS works. There is no native renderer: 3D is rendered in the browser so it can be embedded directly in console layouts.
 - **Sessions and roles.** The host starts a scenario; participants open the server URL, pick a console position and a name. Each position sees the displays and holds the command permissions of that discipline (PROP can command propulsion, not GNC), enforced on the server, the way real consoles have command authority per position. The flight director position can see everything downlinked and gives the go/no-go calls.
 - **Configurable crew size, from one person to a full room.** The position list and how each position is staffed come from a crew configuration chosen in the lobby (presets plus a custom option, stored as a file so sessions are repeatable). Each position is in one of these states:
@@ -61,19 +63,19 @@ Flight controllers at consoles watch live telemetry and make real-time decisions
 - **Three output streams, with different trust levels.**
   - *Truth snapshots* (60 to 120 Hz, binary over WebSocket) go only to the outside view and webcast HUD, which play the "outside camera" and may see truth. Consoles never subscribe to this stream.
   - *Camera feeds* go to the camera views embedded in consoles. Each onboard camera is a sensor model (phase 6, item 37) with a mount point, field of view and exposure, and its feed passes through a video downlink model (frame rate, latency, bandwidth, dropouts, blackout) before it leaves the server. The browser renders the camera's view from that degraded stream and adds noise and compression artifacts driven by link quality. If the link drops, the view freezes or goes dark, exactly as a real feed would.
-  - *Downlinked telemetry* (CCSDS) goes through the comms model, with its latency, bandwidth limits, dropouts and plasma blackout, before it reaches Yamcs. **Consoles see only downlinked telemetry, never truth**, the same way flight software sees only `fsw::Hal`. A telemetry gap should look like a telemetry gap, not like perfect data.
-- **Commands take the real path.** A console sends a command; Yamcs checks it against the XTCE command database; it goes uplink through the comms model (latency, blackout); flight software receives and executes it. Nothing on the ground writes sim state directly.
+  - *Downlinked telemetry* (CCSDS) goes through the comms model, with its latency, bandwidth limits, dropouts and plasma blackout, before it reaches the ground service. **Consoles see only downlinked telemetry, never truth**, the same way flight software sees only `fsw::Hal`. A telemetry gap should look like a telemetry gap, not like perfect data.
+- **Commands take the real path.** A console sends a command; the ground service checks the sender's position permissions and validates the command against the command dictionary; it goes uplink through the comms model (latency, blackout); flight software receives and executes it. Nothing on the ground writes sim state directly.
 - **Determinism with humans in the loop.** Every command is recorded with the sim step at which it is applied on board. The seed plus the command log reproduces the run bit for bit, for replay and debrief.
 - **Supervisor (instructor) station.** A separate privileged client that injects faults, changes weather and controls time (pause, slow motion). Controllers do not see its actions except through their effects on telemetry. The supervisor can be a person or a script: solo or without a volunteer, a fault script picked in the lobby (or randomized from a seed, without telling the crew which faults it contains) plays the role. Supervisor actions go in the same log so replays include them.
 - **Visual clients are only stream consumers.** Any number of 3D views (outside view, and camera views inside each console) can run at once, and the rendering library can change without touching the sim.
-- **Documented protocols.** The snapshot format and the session/role API are versioned and documented, like the XTCE database, so clients can be written in any language.
+- **Documented protocols.** The snapshot format and the session/role API are versioned and documented, like the telemetry dictionary (`telemetry/dictionary.json`), so clients can be written in any language.
 
 ## Rendering plan (not started)
 
 All rendering is in the browser (WebGL, WebGPU later if useful), in `web/`. No native renderer. One shared rendering module draws the vehicle and scene; it is used in two ways:
 
 - **Outside view and webcast HUD.** Driven by the truth snapshot stream. CesiumJS is the leading candidate because it gives a WGS-84 globe, terrain and imagery for free, which fits ascent, entry and the planned ECEF frames (phase 0, item 2); three.js for close-in scenes (pad, tower catch, hot staging) if Cesium is too limiting there. Large distances: camera-relative rendering (Cesium does this already).
-- **Camera views embedded in consoles.** Each position's layout includes the onboard cameras that discipline would watch: PROP gets engine bay and plume cameras, GNC gets views that show attitude and grid fin or flap motion, STRUCT gets cameras on the interstage and tank domes, and so on. They are panels inside the Open MCT layout (a custom Open MCT view), driven by the degraded camera feed stream, never the truth stream. The camera list per position lives in the crew configuration.
+- **Camera views embedded in consoles.** Each position's layout includes the onboard cameras that discipline would watch: PROP gets engine bay and plume cameras, GNC gets views that show attitude and grid fin or flap motion, STRUCT gets cameras on the interstage and tank domes, and so on. They are panels inside the console page (a component of the shared console kit), driven by the degraded camera feed stream, never the truth stream. The camera list per position lives in the crew configuration.
 
 Both interpolate between the two latest samples per frame and must run on an ordinary laptop: several camera panels plus plots on one screen. Budget for that with LODs, a capped resolution per panel, and frame rate tied to the feed's own frame rate (a 30 fps camera feed does not need 60 fps rendering).
 
@@ -86,6 +88,14 @@ Detailed analysis by plotting CSV logs in Python.
 
 ## Mission control plan (phase 10)
 
-CCSDS packets and an XTCE telemetry and command database between vehicle and ground, served by Yamcs (Java, runs on the host). Operator consoles are an Open MCT web app served on the LAN and connected to Yamcs, with one layout per position (flight director, propulsion, GNC, power, thermal, structures, comms): live plots, limit alarms, event logs and command panels, all fed by downlinked telemetry only. Commanding follows the uplink path described above, with command permissions per position. The webcast-style HUD on the 3D view is the public-facing display, separate from the consoles.
+## Ground segment (custom, phase 10)
+
+Build order item 48. Everything between the vehicle's downlink and the operator's eyes is written in this repo, in three parts:
+
+- **Dictionaries.** `telemetry/dictionary.json` is the single source of truth for every downlinked packet: APID, fields, types, units, enums, rates and (later) alarm limits. `tools/telemetry/generate.py` generates the flight packet code, the console decoders and the packet documentation from it, and `--check` fails if they drift. A command dictionary (commands, arguments, which positions may send them) follows the same pattern when commanding lands.
+- **Ground service.** A module of the `sim_server` process (the only networking code, per the layering rule), behind a narrow interface so it can become its own process later. It takes packets from the downlink, decodes them using the dictionary, checks limits and raises alarms, archives the raw packets per run (append-only), serves the current value table and history queries to consoles, and is the single gateway for commands: it checks the sender's position permissions and the command dictionary, then sends the command up through the uplink model. Archive plus seed plus command log is what makes replay and debrief possible.
+- **Consoles.** Custom web pages, one per position (flight director, propulsion, GNC, power, thermal, structures, comms) with fixed layouts built from a shared console kit (`web/js/console/`, planned): a telemetry store with history catch-up, plot, readout and status widgets, an alarm banner, a mode timeline, and the common header (mission time from packets, link health, per-packet staleness). All fed by downlinked telemetry only; commands go through the ground service. Pages stay fast on an ordinary laptop: plots are decimated to their pixel width, updates are batched, and nothing reads layout in the frame loop.
+
+The webcast-style HUD on the 3D view is the public-facing display, separate from the consoles.
 
 Later, optional: voice loops between positions (WebRTC in the browser), since real mission control coordinates by voice; flight rules and procedures shown alongside the consoles.
