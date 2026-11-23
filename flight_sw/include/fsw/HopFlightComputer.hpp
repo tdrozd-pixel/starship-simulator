@@ -26,8 +26,8 @@ struct HopConfig {
     double rateHz = 100.0;
     double ignitionTime = 1.0;        // [s] after sim start (earliest; also needs GNSS)
     int gnssFixesRequired = 10;       // valid fixes before ignition is allowed
-    double targetAltitude = 50.0;     // [m]
-    double ascentRate = 5.0;          // [m/s] setpoint ramp
+    double targetAltitude = 250.0;     // [m]
+    double ascentRate = 100.0;          // [m/s] setpoint ramp
     // Fraction of the full-throttle net deceleration the descent braking profile plans to use.
     double descentBrakingMargin = 0.6;
     // Descent gate: do not get lower than slope * horizontal error [m of height per m of
@@ -35,7 +35,7 @@ struct HopConfig {
     double alignmentGateSlope = 3.0;
     double alignmentGateTime = 2.0;      // [s]
     double finalAlignError = 1.0;        // [m] final descent stops above this error
-    double finalDescentAltitude = 2.0;  // [m] switch to constant-rate descent
+    double finalDescentAltitude = 1.0;  // [m] switch to constant-rate descent
     double finalDescentRate = 1.0;    // [m/s]
     double liftoffAltitude = 0.3;     // [m] estimate above this counts as liftoff
     double ignitionThrustToWeight = 1.15;  // held until liftoff
@@ -78,23 +78,23 @@ struct HopConfig {
     double gnssVelocitySigma = 0.05;           // [m/s] assumed GNSS velocity accuracy
 
     double altitudeKp = 0.8;  // [1/s]
-    double maxClimbRate = 6.0;
+    double maxClimbRate = 100.0;
     double maxSinkRate = 40.0;
     PidGains velocityGains{2.0, 0.6, 0.0, -4.0, 6.0, 2.0};  // output: accel [m/s^2]
     // The Ship is slow in attitude (lever arm ~9.5 m against a ~10 m radius of
     // gyration; a gimbal deflection first pushes the base the wrong way), so the
     // horizontal loops are kept well below the attitude loop bandwidth.
-    double horizontalPositionKp = 0.08;  // [1/s]
-    double maxHorizontalSpeed = 3.0;     // [m/s]
-    double horizontalVelocityKp = 0.3;   // [1/s]
+    double horizontalPositionKp = 0.1;  // [1/s] was .08
+    double maxHorizontalSpeed = 100.0;     // [m/s]
+    double horizontalVelocityKp = 0.4;   // [1/s] was .3
     // Trims steady disturbances: wind drag, and the tilt error of the gyro-integrated
     // attitude (about 0.2 deg after a minute with the placeholder IMU), which a level
     // controller cannot see. TODO(phase 9, item 43): GNSS-aided attitude in the EKF.
-    double horizontalVelocityKi = 0.06;  // [1/s^2]
-    double maxHorizontalTrim = 0.3;      // [m/s^2] integrator limit
-    double maxHorizontalAccel = 0.6;     // [m/s^2]
+    double horizontalVelocityKi = 0.14;  // [1/s^2] was 0.06
+    double maxHorizontalTrim = 1.0;      // [m/s^2] integrator limit
+    double maxHorizontalAccel = 1.5;     // [m/s^2]
     double attitudeKp = 2.25;            // [1/s^2]
-    double attitudeKd = 3.0;             // [1/s]
+    double attitudeKd = 2.0;             // [1/s]
     double rollKp = 0.2;                 // [1/s^2]
     double rollKd = 0.8;                 // [1/s]
     double maxRollGimbal = 2.0 * 3.14159265358979323846 / 180.0;  // [rad] differential share
