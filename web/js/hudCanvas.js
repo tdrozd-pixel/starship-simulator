@@ -70,6 +70,19 @@ export function drawHud(ctx, w, h, telemetry, status) {
   ctx.textAlign = 'center';
   ctx.fillText(telemetry.met, w / 2, margin + metH / 2);
 
+  // Catch outcome, below the elapsed time (same text and colors as the DOM banner).
+  if (telemetry.result) {
+    ctx.font = font(28, true);
+    const rw = ctx.measureText(telemetry.result).width + 48 * s;
+    const rh = 28 * 1.4 * s + 12 * s;
+    ctx.fillStyle = telemetry.result === 'CAUGHT' ? BADGE.green : BADGE.red;
+    roundRect(ctx, (w - rw) / 2, margin + metH + 8 * s, rw, rh, 4 * s);
+    ctx.fill();
+    ctx.fillStyle = telemetry.result === 'CAUGHT' ? '#000' : '#fff';
+    ctx.textAlign = 'center';
+    ctx.fillText(telemetry.result, w / 2, margin + metH + 8 * s + rh / 2);
+  }
+
   // Telemetry, top right.
   const telW = 230 * s + 2 * pad;
   const telX = w - margin - telW;

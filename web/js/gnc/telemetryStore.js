@@ -1,6 +1,7 @@
 // Per-parameter ring buffers and latest values for downlinked GNC telemetry. Pure module.
 // x is onboard time [s]. Rings are allocated up front; ingest allocates only the decoded packet.
-import { APID, decodePayload, rotationVectorDeg, RAD2DEG, NUM_ENGINES } from './gncPackets.js';
+import { APID, decodePayload, rotationVectorDeg, RAD2DEG, NUM_ENGINES, NUM_POWER_ENGINES } from './gncPackets.js';
+import { differentialThrottle } from './gncModel.js';
 
 export const DEFAULT_CAPACITY = 6000;
 
@@ -8,6 +9,8 @@ export const DEFAULT_CAPACITY = 6000;
 // "guidance_control.engines[0].pitch"; see paramFormat.js). Columns are stored in display units
 // (angles in deg, throttle in %); "derived.*" columns are computed from several fields.
 const tmp3 = [0, 0, 0];
+const tmpDiff = { dev: [0, 0, 0], spread: NaN, active: false };
+const POWER = (f) => Array.from({ length: NUM_POWER_ENGINES }, (_, i) => 'engine_status.engines[' + i + '].' + f);
 const ENG = (pk, f) => [0, 1, 2].map((i) => pk + '.engines[' + i + '].' + f);
 const GROUPS = {
   [APID.FSW]: {
@@ -18,20 +21,26 @@ const GROUPS = {
     names: ['derived.attX', 'derived.attY', 'derived.attZ',
       'navigation.angularRate[0]', 'navigation.angularRate[1]', 'navigation.angularRate[2]',
       'navigation.altitude', 'navigation.verticalVelocity', 'navigation.east', 'navigation.north',
-      'navigation.velocityEast', 'navigation.velocityNorth'],
+      'navigation.velocityEast', 'navigation.velocityNorth',
+      'navigation.positionSigmaEast', 'navigation.positionSigmaNorth',
+      'navigation.gnssInnovationEast', 'navigation.gnssInnovationNorth', 'navigation.altimeterInnovation'],
     fill: (d, r) => {
       rotationVectorDeg(d.attitude, tmp3);
       r[0] = tmp3[0]; r[1] = tmp3[1]; r[2] = tmp3[2];
       r[3] = d.angularRate[0] * RAD2DEG; r[4] = d.angularRate[1] * RAD2DEG; r[5] = d.angularRate[2] * RAD2DEG;
       r[6] = d.altitude; r[7] = d.verticalVelocity; r[8] = d.east; r[9] = d.north;
       r[10] = d.velocityEast; r[11] = d.velocityNorth;
+      r[12] = d.positionSigmaEast; r[13] = d.positionSigmaNorth;
+      r[14] = d.gnssInnovationEast; r[15] = d.gnssInnovationNorth; r[16] = d.altimeterInnovation;
     },
   },
   [APID.GNC]: {
     names: ['guidance_control.altitudeSetpoint', 'guidance_control.velocitySetpoint',
       'guidance_control.eastSetpoint', 'guidance_control.northSetpoint',
       'guidance_control.eastAccelCommand', 'guidance_control.northAccelCommand',
-      ...ENG('guidance_control', 'throttle'), ...ENG('guidance_control', 'pitch'), ...ENG('guidance_control', 'yaw')],
+      ...ENG('guidance_control', 'throttle'), ...ENG('guidance_control', 'pitch'), ...ENG('guidance_control', 'yaw'),
+      'guidance_control.attitudeError[0]', 'guidance_control.attitudeError[1]', 'guidance_control.attitudeError[2]',
+      'derived.attErrMag', 'derived.thrDev[0]', 'derived.thrDev[1]', 'derived.thrDev[2]', 'derived.thrSpread'],
     fill: (d, r) => {
       r[0] = d.altitudeSetpoint; r[1] = d.velocitySetpoint; r[2] = d.eastSetpoint; r[3] = d.northSetpoint;
       r[4] = d.eastAccelCommand; r[5] = d.northAccelCommand;
@@ -39,6 +48,10 @@ const GROUPS = {
         const e = d.engines[i];
         r[6 + i] = e.throttle * 100; r[9 + i] = e.pitch * RAD2DEG; r[12 + i] = e.yaw * RAD2DEG;
       }
+      r[15] = d.attitudeError[0] * RAD2DEG; r[16] = d.attitudeError[1] * RAD2DEG; r[17] = d.attitudeError[2] * RAD2DEG;
+      r[18] = Math.hypot(d.attitudeError[0], d.attitudeError[1], d.attitudeError[2]) * RAD2DEG;
+      differentialThrottle(d.engines, tmpDiff);
+      r[19] = tmpDiff.dev[0]; r[20] = tmpDiff.dev[1]; r[21] = tmpDiff.dev[2]; r[22] = tmpDiff.spread;
     },
   },
   [APID.FEEDBACK]: {
@@ -47,6 +60,25 @@ const GROUPS = {
       for (let i = 0; i < NUM_ENGINES; i++) {
         r[i] = d.engines[i].pitch * RAD2DEG; r[3 + i] = d.engines[i].yaw * RAD2DEG;
       }
+    },
+  },
+  [APID.ENGINE]: {
+    // Actual (measured) throttle and the power setting command of all six engines [%].
+    names: [...POWER('throttle'), ...POWER('command')],
+    fill: (d, r) => {
+      for (let i = 0; i < NUM_POWER_ENGINES; i++) { r[i] = d.engines[i].throttle * 100; r[NUM_POWER_ENGINES + i] = d.engines[i].command * 100; }
+    },
+  },
+  [APID.CATCH_STATUS]: {
+    // Catch approach errors in the tower approach frame; tilt in deg. derived.negLateralLimit is the
+    // mirrored funnel edge so a chart can show the lateral error between +/- the limit.
+    names: ['catch_status.alongRemaining', 'catch_status.lateralError', 'catch_status.pinHeightAboveSeat',
+      'catch_status.alongSpeed', 'catch_status.lateralSpeed', 'catch_status.sinkRate', 'catch_status.tilt',
+      'catch_status.lateralLimit', 'derived.negLateralLimit', 'catch_status.timeToSeat'],
+    fill: (d, r) => {
+      r[0] = d.alongRemaining; r[1] = d.lateralError; r[2] = d.pinHeightAboveSeat;
+      r[3] = d.alongSpeed; r[4] = d.lateralSpeed; r[5] = d.sinkRate; r[6] = d.tilt * RAD2DEG;
+      r[7] = d.lateralLimit; r[8] = -d.lateralLimit; r[9] = d.timeToSeat;
     },
   },
   [APID.GNSS]: {

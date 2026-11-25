@@ -4,6 +4,9 @@ import { PARAM_APID } from './telemetryStore.js';
 import { createAligner } from './decimate.js';
 
 export const ENGINE_COLORS = ['#35d7ff', '#f0b030', '#4ccf6a'];
+// Six-engine power charts: SL1..SL3 as above, RV1..RV3 in lighter tints of the same hues.
+export const POWER_ENGINE_COLORS = [...ENGINE_COLORS, '#9fe9ff', '#f7d68a', '#a5e6b4'];
+const POWER_LABELS = ['SL1', 'SL2', 'SL3', 'RV1', 'RV2', 'RV3'];
 
 // Expand series marked perEngine ("{e}" in the param) for the selected engine (0..2 or 'all').
 // With 'all' (or allEngines on the series) they take the engine color; with one engine they keep
@@ -12,6 +15,12 @@ export function expandSeries(series, engineSel) {
   const out = [];
   for (const s of series) {
     if (!s.perEngine) { out.push(s); continue; }
+    if (s.powerEngines) { // all six engines of engine_status, always shown together
+      for (let e = 0; e < POWER_LABELS.length; e++) {
+        out.push({ ...s, param: s.param.replace('{e}', e), label: POWER_LABELS[e] + (s.label ? ' ' + s.label : ''), color: POWER_ENGINE_COLORS[e], dash: e >= 3 ? [2, 3] : s.dash });
+      }
+      continue;
+    }
     const all = s.allEngines || engineSel === 'all';
     for (const e of all ? [0, 1, 2] : [engineSel]) {
       out.push({ ...s, param: s.param.replace('{e}', e), label: 'E' + (e + 1) + ' ' + s.label, color: all ? ENGINE_COLORS[e] : s.color });

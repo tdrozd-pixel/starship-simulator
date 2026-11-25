@@ -73,12 +73,14 @@ def main():
         fails += res["failures"]
 
         # 2. Cross-check decoder against Python packing
-        # 24 byte header + 19 doubles = 176 (the plan said 20 doubles, which would be 184)
-        fmt = "<4sHHIIQ" + "d" * 19
-        assert struct.calcsize(fmt) == 176
-        vals = [12.345 + i * 1.7 for i in range(19)]
-        raw = struct.pack(fmt, b"SSTR", 1, 1, 7, 5, 123456789012, *vals)
-        assert len(raw) == 176
+        # 24 byte header + 19 doubles = 176, 12 per-engine doubles = 272, plus 2 arm doubles, tower state
+        # and catch result = 296 (protocol v3)
+        fmt = "<4sHHIIQ" + "d" * 33 + "II"
+        assert struct.calcsize(fmt) == 296
+        vals = [12.345 + i * 1.7 for i in range(33)]
+        flags = 5 | (1 << 3) | (1 << 8) | (1 << 9)  # halted + engine, engines 0 and 5 running, caught
+        raw = struct.pack(fmt, b"SSTR", 3, 1, 7, flags, 123456789012, *vals, 3, 1)
+        assert len(raw) == 296
         got = page.evaluate(
             """async (hex) => {
               const m = await import('/js/protocol.js');
@@ -88,11 +90,14 @@ def main():
               return {kind: r.kind, runId: s.runId, flags: s.flags, step: s.step.toString(),
                       isBig: typeof s.step === 'bigint',
                       f: [s.simTime, ...s.pos, ...s.vel, ...s.quat, ...s.angRate, s.throttle,
-                          s.gimbalPitch, s.gimbalYaw, s.propellantMass, s.totalMass]};
+                          s.gimbalPitch, s.gimbalYaw, s.propellantMass, s.totalMass,
+                          ...s.engineThrottle, ...s.engineGimbalPitch, ...s.engineGimbalYaw, ...s.armAngle],
+                      run: s.engineRun, tower: s.towerState, result: s.catchResult,
+                      caught: s.caught, crashed: s.crashed};
             }""",
             raw.hex(),
         )
-        if got["kind"] != "snapshot" or got["runId"] != 7 or got["flags"] != 5 or got["step"] != "123456789012" or not got["isBig"]:
+        if got["kind"] != "snapshot" or got["runId"] != 7 or got["flags"] != flags or got["run"] != [True, False, False, False, False, True] or got["step"] != "123456789012" or not got["isBig"] or got["tower"] != 3 or got["result"] != 1 or not got["caught"] or got["crashed"]:
             fails.append(f"cross-check header mismatch: {got}")
         for i, (a, b) in enumerate(zip(got["f"], vals)):
             if not math.isclose(a, b, rel_tol=0, abs_tol=1e-12):

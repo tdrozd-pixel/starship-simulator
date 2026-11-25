@@ -18,12 +18,15 @@
     <div>Time scale <span id="timescale">x1.0</span></div>
   </div>
   <div class="panel" id="met">T+--:--.-</div>
+  <div id="result" style="display:none;position:absolute;top:64px;left:50%;transform:translateX(-50%);padding:6px 24px;border-radius:4px;font:bold 28px ui-monospace,Consolas,Menlo,monospace;letter-spacing:2px;color:#000;background:#4ccf6a"></div>
   <div class="panel" id="telemetry">
     <div class="title">TRUTH VIEW</div>
     <table>
       <tr><td>ALT (m)</td><td id="t-alt">-</td></tr>
       <tr><td>V SPEED (m/s)</td><td id="t-vs">-</td></tr>
       <tr><td>THROTTLE (%)</td><td id="t-thr">-</td></tr>
+      <tr><td>SL1-3 THR (%)</td><td id="t-sl">-</td></tr>
+      <tr><td>RV1-3 THR (%)</td><td id="t-rv">-</td></tr>
       <tr><td>GIMBAL PITCH (deg)</td><td id="t-gp">-</td></tr>
       <tr><td>GIMBAL YAW (deg)</td><td id="t-gy">-</td></tr>
       <tr><td>ATT X (deg)</td><td id="t-ax">-</td></tr>

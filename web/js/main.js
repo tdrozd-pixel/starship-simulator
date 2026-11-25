@@ -4,6 +4,7 @@ import { createInterpolator } from './interpolator.js';
 import { createTruthClient } from './truthClient.js';
 import { buildScene } from './sceneBuilder.js';
 import { createVehicleView } from './vehicleView.js';
+import { createTowerView } from './towerView.js';
 import { createCameraRig } from './cameraRig.js';
 import { createHud } from './hud.js';
 import { buildTelemetry } from './hudModel.js';
@@ -15,6 +16,8 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 const scene = buildScene();
 const vehicle = createVehicleView();
 scene.add(vehicle.root);
+const towerView = createTowerView();
+scene.add(towerView.root);
 const rig = createCameraRig(renderer, canvas);
 
 const interp = createInterpolator({
@@ -36,6 +39,8 @@ client = createTruthClient({
   url,
   onHello: (h) => {
     hud.setHello(h);
+    towerView.build(h.tower);
+    vehicle.setTower(h.tower);
     interp.setTimeScale(h.timeScale);
     interp.setSnapshotRate(h.snapshotRateHz);
     interp.reset(h.runId);
@@ -165,6 +170,7 @@ function frame(now) {
   const s = interp.sample(now / 1000);
   if (s) {
     vehicle.apply(s);
+    towerView.apply(s);
     rig.update(vehicle.root.position, dt);
   } else {
     vehicle.hide();

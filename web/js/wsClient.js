@@ -1,6 +1,7 @@
 // Generic reconnecting WebSocket client. No three, no DOM. WebSocketImpl is injectable for tests.
 // decodeBinary(arrayBuffer) returns {kind:'error', reason}, {kind:'unknown'} or any other object,
 // which is handed to onData. An error whose reason mentions "version" is fatal (no reconnect).
+// o.protocol is the hello protocol version this client speaks (default 1).
 // acceptHello(msg) may return a reason string to reject a hello (fatal).
 import { parseControl } from './protocol.js';
 
@@ -51,7 +52,7 @@ export function createWsClient(o) {
         const m = parseControl(d);
         if (!m) return;
         if (m.type === 'hello') {
-          if (m.protocol !== 1) { fail('protocol version ' + m.protocol + ' unsupported'); return; }
+          if (m.protocol !== (o.protocol ?? 1)) { fail('protocol version ' + m.protocol + ' unsupported'); return; }
           const why = typeof o.acceptHello === 'function' ? o.acceptHello(m) : null;
           if (why) { fail(why); return; }
           cb('onHello')(m);

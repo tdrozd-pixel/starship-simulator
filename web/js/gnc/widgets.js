@@ -2,13 +2,14 @@
 // DOM-bound. buildScreen creates the DOM and chart objects of one screen; update() refreshes the
 // text (and, when asked, the canvases) of that screen only, so a screen that is not shown costs
 // nothing. Widgets read values through paramFormat.js and the model from gncModel.js.
-import { APID, NUM_ENGINES, RAD2DEG } from './gncPackets.js';
+import { APID, NUM_ENGINES, NUM_POWER_ENGINES, POWER_ENGINE_LABELS, RAD2DEG } from './gncPackets.js';
 import { fmtSigned } from './gncModel.js';
-import { formatParam, paramUnit, resolveParam, parseParam } from './paramFormat.js';
+import { formatParam, paramUnit, resolveParam, parseParam, derivedLamp } from './paramFormat.js';
 import { measure } from './canvasUtil.js';
 import { drawGimbalBox } from './gimbalView.js';
 import { drawAttitude } from './attitudeView.js';
 import { drawTimeline } from './timelineView.js';
+import { drawCorridor, TRAIL_SECONDS } from './corridorView.js';
 
 function h(tag, cls, text) {
   const el = document.createElement(tag);
@@ -55,10 +56,10 @@ const BUILDERS = {
 
   lamps(spec, ctx) {
     const box = h('div', 'lamps');
-    const lamps = spec.items.map((it) => { const e = h('span', 'lamp', it.label); box.append(e); return { it, e, p: parseParam(it.param) }; });
+    const lamps = spec.items.map((it) => { const e = h('span', 'lamp' + (it.tone ? ' ' + it.tone : ''), it.label); box.append(e); return { it, e, p: parseParam(it.param) }; });
     return {
       el: spec.title ? panel(spec.title, box) : box,
-      update() { for (const l of lamps) l.e.classList.toggle('on', !!resolveParam(ctx.store, l.p)); },
+      update(model) { for (const l of lamps) l.e.classList.toggle('on', l.p.derived ? derivedLamp(model, l.p) : !!resolveParam(ctx.store, l.p)); },
     };
   },
 
@@ -105,7 +106,28 @@ const BUILDERS = {
         if (!canvases || (++n & 1)) return; // the map redraws at half the canvas rate (2.5 Hz): its trail only grows slowly
         const gnc = ctx.store.latest[APID.GNC], nav = ctx.store.latest[APID.NAV];
         ctx.map.draw(canvas, model.frame, ctx.store.latest[APID.CONFIG] || null,
-          gnc ? { east: gnc.eastSetpoint, north: gnc.northSetpoint } : null, nav ? { east: nav.east, north: nav.north } : null);
+          gnc ? { east: gnc.eastSetpoint, north: gnc.northSetpoint } : null, nav ? { east: nav.east, north: nav.north } : null, ctx.store.latest[APID.CATCH_CONFIG] || null);
+      },
+    };
+  },
+
+  // Catch approach corridor (canvas). Redraws at 5 Hz from the stored catch_status history.
+  corridor(spec, ctx) {
+    const canvas = h('canvas');
+    canvas.className = 'corridor';
+    const trail = { n: 0, along: null, lateral: null, height: null, limit: null };
+    const names = ['catch_status.alongRemaining', 'catch_status.lateralError', 'catch_status.pinHeightAboveSeat', 'catch_status.lateralLimit'];
+    let n = 1;
+    return {
+      el: panel(spec.title, canvas),
+      update(model, canvases) {
+        if (!canvases || (++n & 1)) return;
+        const st = ctx.store.latest[APID.CATCH_STATUS] || null;
+        if (st) {
+          const w = ctx.store.series(names, ctx.store.latestTime[APID.CATCH_STATUS] - TRAIL_SECONDS);
+          trail.n = w[0].length; trail.along = w[1]; trail.lateral = w[2]; trail.height = w[3]; trail.limit = w[4];
+        }
+        drawCorridor(canvas, st, ctx.store.latest[APID.CATCH_CONFIG] || null, st ? trail : null);
       },
     };
   },
@@ -132,6 +154,46 @@ const BUILDERS = {
           if (canvases) drawGimbalBox(b.canvas, cmd, meas);
           const html = gimbalText(cmd, meas);
           if (b.last !== html) { b.val.innerHTML = html; b.last = html; }
+        }
+      },
+    };
+  },
+
+  // Power settings of all six engines from engine_status (model.engines): state lamp, commanded
+  // power, actual throttle and sensor validity. RVac columns read OFF throughout the hop.
+  powerTable(spec) {
+    const t = h('table', 'kv');
+    const head = h('tr');
+    head.append(h('th'), ...POWER_ENGINE_LABELS.map((x) => h('th', '', x)));
+    t.append(head);
+    const defs = [['STATE', 'state'], ['COMMAND [%]', 'command'], ['THROTTLE ACTUAL [%]', 'throttle'], ['SENSOR', 'valid']];
+    const rows = defs.map(([label, key]) => {
+      const tr = h('tr');
+      tr.append(h('td', '', label));
+      const cells = [];
+      for (let i = 0; i < NUM_POWER_ENGINES; i++) {
+        const td = h('td', '', key === 'state' ? '' : '--');
+        const lamp = key === 'state' || key === 'valid' ? h('span', 'lamp', '--') : null;
+        if (lamp) td.append(lamp);
+        cells.push({ td, lamp, set: textCell(lamp || td), lastCls: '' });
+        tr.append(td);
+      }
+      t.append(tr);
+      return { key, cells };
+    });
+    const note = h('div', 'note', 'SL1 to SL3 sea-level (gimbaled), RV1 to RV3 Raptor Vacuum (fixed). RVacs are not used in the hop, so they stay OFF.');
+    return {
+      el: panel(spec.title, t, note),
+      update(model) {
+        for (const r of rows) {
+          for (let i = 0; i < NUM_POWER_ENGINES; i++) {
+            const e = model.engines[i], c = r.cells[i];
+            c.set(e[r.key]);
+            if (c.lamp) {
+              const cls = r.key === 'state' ? (e.tone === 'off' ? '' : ' on ' + e.tone) : (e.invalid ? ' on red' : e.valid === '--' ? '' : ' on');
+              if (cls !== c.lastCls) { c.lamp.className = 'lamp' + cls; c.lastCls = cls; }
+            }
+          }
         }
       },
     };

@@ -9,18 +9,32 @@ export { PACKETS, ENUMS, USER_LENGTH };
 export const APID = {
   FSW: PACKETS.fsw_status.apid, CONFIG: PACKETS.mission_config.apid, NAV: PACKETS.navigation.apid,
   GNC: PACKETS.guidance_control.apid, FEEDBACK: PACKETS.actuator_feedback.apid, GNSS: PACKETS.gnss.apid,
+  ENGINE: PACKETS.engine_status.apid,
+  CATCH_STATUS: PACKETS.catch_status.apid, CATCH_CONFIG: PACKETS.catch_config.apid,
 };
 export const APID_NAMES = {
   [APID.FSW]: 'FSW', [APID.CONFIG]: 'CONFIG', [APID.NAV]: 'NAV', [APID.GNC]: 'GNC',
-  [APID.FEEDBACK]: 'ACT', [APID.GNSS]: 'GNSS',
+  [APID.FEEDBACK]: 'ACT', [APID.GNSS]: 'GNSS', [APID.ENGINE]: 'ENG',
+  [APID.CATCH_STATUS]: 'CATCH', [APID.CATCH_CONFIG]: 'CATCHCFG',
 };
 // Indexed by enum value (values may have gaps, e.g. a retired mode).
 const labelsByValue = (list) => { const a = []; for (const e of list) a[e.value] = e.label; return a; };
 export const MODE_NAMES = labelsByValue(ENUMS.mode);
 export const FIX_TYPE_NAMES = labelsByValue(ENUMS.gnssFixType);
+export const ENGINE_STATE_NAMES = labelsByValue(ENUMS.engineState);
+export const CATCH_PHASE_NAMES = labelsByValue(ENUMS.catchPhase);
+export const CATCH_ABORT_NAMES = labelsByValue(ENUMS.catchAbort);
+export const ARMS_EXPECTED_NAMES = labelsByValue(ENUMS.armsExpected);
 
 // Vehicle constants (dictionary constants).
 export const NUM_ENGINES = CONSTANTS.engineCount;
+// Sea-level (gimbaled) engines come first, then the fixed Raptor Vacuum engines: engine_status
+// carries all six, the gimbal records only the first NUM_ENGINES.
+export const NUM_RVAC = CONSTANTS.rvacCount;
+export const NUM_POWER_ENGINES = NUM_ENGINES + NUM_RVAC;
+export const POWER_ENGINE_LABELS = [];
+for (let i = 0; i < NUM_ENGINES; i++) POWER_ENGINE_LABELS.push('SL' + (i + 1));
+for (let i = 0; i < NUM_RVAC; i++) POWER_ENGINE_LABELS.push('RV' + (i + 1));
 export const ENGINE_RADIUS = CONSTANTS.engineRadius; // [m]
 export const GIMBAL_LIMIT_DEG = CONSTANTS.gimbalLimitDeg; // [deg]
 export const RAD2DEG = 180 / Math.PI;

@@ -51,7 +51,10 @@ export function createInterpolator(opts = {}) {
   // Reused output (avoid per-frame allocation).
   const out = {
     ready: true, pos: [0, 0, 0], vel: [0, 0, 0], quat: [1, 0, 0, 0],
+    engineThrottle: [0, 0, 0, 0, 0, 0], engineGimbalPitch: [0, 0, 0], engineGimbalYaw: [0, 0, 0],
+    engineRun: [false, false, false, false, false, false],
     throttle: 0, gimbalPitch: 0, gimbalYaw: 0, propellantMass: 0, totalMass: 0,
+    armAngle: [0, 0], towerState: 0, catchResult: 0, caught: false, crashed: false,
     flags: 0, engineRunning: false, touchdown: false, halted: false, simTime: 0, runId: 0,
   };
 
@@ -106,6 +109,17 @@ export function createInterpolator(opts = {}) {
       out.pos[i] = l(a.pos[i], b.pos[i]);
       out.vel[i] = l(a.vel[i], b.vel[i]);
     }
+    for (let i = 0; i < 6; i++) out.engineThrottle[i] = l(a.engineThrottle[i], b.engineThrottle[i]);
+    for (let i = 0; i < 3; i++) {
+      out.engineGimbalPitch[i] = l(a.engineGimbalPitch[i], b.engineGimbalPitch[i]);
+      out.engineGimbalYaw[i] = l(a.engineGimbalYaw[i], b.engineGimbalYaw[i]);
+    }
+    // Arm angles are linear; a sample without them (older tests) counts as open. Held when starved
+    // because extrapolate() feeds lerpFields(s, s, 0).
+    for (let i = 0; i < 2; i++) {
+      const x = a.armAngle ? a.armAngle[i] : 0, y = b.armAngle ? b.armAngle[i] : 0;
+      out.armAngle[i] = l(x, y);
+    }
     out.throttle = l(a.throttle, b.throttle);
     out.gimbalPitch = l(a.gimbalPitch, b.gimbalPitch);
     out.gimbalYaw = l(a.gimbalYaw, b.gimbalYaw);
@@ -114,7 +128,10 @@ export function createInterpolator(opts = {}) {
     out.simTime = l(a.simTime, b.simTime);
     slerp(a.quat, b.quat, u, out.quat);
     const d = u < 0.5 ? a : b;
+    for (let i = 0; i < 6; i++) out.engineRun[i] = d.engineRun[i];
     out.flags = d.flags; out.engineRunning = d.engineRunning;
+    out.towerState = d.towerState || 0; out.catchResult = d.catchResult || 0;
+    out.caught = !!d.caught; out.crashed = !!d.crashed;
     out.touchdown = d.touchdown; out.halted = d.halted; out.runId = d.runId;
   }
 

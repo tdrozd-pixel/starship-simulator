@@ -21,7 +21,9 @@ Use the built-in recorder instead of an OS screen recorder: pick a resolution (7
 ## Layout
 
 - `js/frames.js`: the only place sim ENU frames are converted to three.js frames.
-- `js/protocol.js`, `js/interpolator.js`, `js/frames.js`: pure modules (no three, no DOM access), unit tested.
+- `js/engineLayout.js`: the six-engine layout (SL ring, RVac ring) in one place, with `HopperParams.hpp` as its source; `js/vehicleView.js` draws all six engines from the per-engine actual fields of protocol v2 and the catch pins from `hello.tower`.
+- `js/towerView.js` (three) builds the catch tower mast and two arms once from `hello.tower` and rotates each arm every frame by its actual angle (protocol v3 `armAngle`); the arm math is the pure `js/towerGeometry.js` (hinge positions, arm direction angle, arm end point). The HUD shows a CAUGHT or CRASHED banner from the snapshot flags (text in `hudModel.js`, drawn by `hud.js` and `hudCanvas.js`).
+- `js/protocol.js`, `js/interpolator.js`, `js/frames.js`, `js/engineLayout.js`, `js/towerGeometry.js`: pure modules (no three, no DOM access), unit tested.
 - `js/truthClient.js`: WebSocket with reconnect and backoff.
 - `js/sceneBuilder.js`, `js/vehicleView.js`, `js/cameraRig.js`: the only modules importing three.
 - `js/hudModel.js`: pure; the HUD's display strings, shared by the DOM HUD (`js/hud.js`) and the recorded frames (`js/hudCanvas.js`).
@@ -62,4 +64,4 @@ Modules in `js/gnc/`: pure `ccsds.js`, `gncPackets.js`, `geodesy.js`, `telemetry
 python -I web/tests/run_web_tests.py
 ```
 
-Needs Python with `playwright` (Chromium or Edge). It serves `web/`, runs `tests/test.html` in a headless browser, cross-checks the JS decoder against a Python-packed 176 byte snapshot, smoke-loads `index.html`, and records a 2 s clip with the built-in recorder (checks 1080p render size, 30 fps pacing and the saved file). The GNC checks cross-check a Python-packed navigation packet against the JS decoders, then load `/gnc/`, assert it never opens `/ws/truth` and never loads three.js, inject a synthetic hop for every APID through `__gncInject`, and check mode, fix, satellites, deltas, loss counting, run reset and staleness; screen routing by click, key and hash, that only the shown screen draws charts, reload restore, follow-phase paging (on and off), planned regimes, menu and popovers; and a perf check at 4x CPU throttle with live-rate packets.
+Needs Python with `playwright` (Chromium or Edge). It serves `web/`, runs `tests/test.html` in a headless browser, cross-checks the JS decoder against a Python-packed 296 byte (protocol v3) snapshot, smoke-loads `index.html`, and records a 2 s clip with the built-in recorder (checks 1080p render size, 30 fps pacing and the saved file). The GNC checks cross-check a Python-packed navigation packet against the JS decoders, then load `/gnc/`, assert it never opens `/ws/truth` and never loads three.js, inject a synthetic hop for every APID through `__gncInject`, and check mode, fix, satellites, deltas, loss counting, run reset and staleness; screen routing by click, key and hash, that only the shown screen draws charts, reload restore, follow-phase paging (on and off), planned regimes, menu and popovers; and a perf check at 4x CPU throttle with live-rate packets.

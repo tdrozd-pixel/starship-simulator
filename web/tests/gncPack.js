@@ -48,6 +48,11 @@ export function packNav(o) {
   o.force.forEach((v, i) => w.f32(28 + 4 * i, v));
   w.f32(40, o.alt); w.f32(44, o.vz); w.f32(48, o.range); w.u8(52, o.rangeValid ? 1 : 0);
   w.f32(56, o.east); w.f32(60, o.north); w.f32(64, o.ve); w.f32(68, o.vn); w.f32(72, o.be); w.f32(76, o.bn);
+  // Filter health (optional in test fixtures; ages default to -1 = no accepted update yet).
+  const h = o.health || {};
+  w.f32(80, h.psE || 0); w.f32(84, h.psN || 0); w.f32(88, h.vsE || 0); w.f32(92, h.vsN || 0);
+  w.f32(96, h.giE || 0); w.f32(100, h.giN || 0); w.f32(104, h.ai || 0);
+  w.f32(108, h.gAge === undefined ? -1 : h.gAge); w.f32(112, h.aAge === undefined ? -1 : h.aAge);
   return new Uint8Array(w.buf);
 }
 export function packGnc(o) {
@@ -62,11 +67,35 @@ export function packFeedback(o) {
   o.engines.forEach((e, i) => { const b = 12 * i; w.u8(b, e.valid ? 1 : 0); w.f32(b + 4, e.pitch); w.f32(b + 8, e.yaw); });
   return new Uint8Array(w.buf);
 }
+// engine_status (0x150): six engine_power records {on, state, valid, command, throttle} (12 bytes each).
+export function packEngineStatus(o) {
+  const w = writer(USER_LENGTH[0x150]);
+  o.engines.forEach((e, i) => {
+    const b = 12 * i;
+    w.u8(b, e.on ? 1 : 0); w.u8(b + 1, e.state); w.u8(b + 2, e.valid ? 1 : 0); w.f32(b + 4, e.command); w.f32(b + 8, e.thr);
+  });
+  return new Uint8Array(w.buf);
+}
 export function packGnss(o) {
   const w = writer(USER_LENGTH[0x140]);
   w.u8(0, o.fix); w.u8(1, o.used); w.u8(2, o.visible);
   w.f64(4, o.fixTime); w.f64(12, o.lat); w.f64(20, o.lon); w.f64(28, o.h);
   o.vel.forEach((v, i) => w.f32(36 + 4 * i, v));
   w.f32(48, o.hSigma); w.f32(52, o.vSigma);
+  return new Uint8Array(w.buf);
+}
+// catch_status (0x160): u8 phase, abortReason, armsExpected, flags; then nine f32.
+export function packCatchStatus(o) {
+  const w = writer(USER_LENGTH[0x160]);
+  w.u8(0, o.phase); w.u8(1, o.abort); w.u8(2, o.arms); w.u8(3, o.flags);
+  [o.along, o.lateral, o.pinHeight, o.alongSpeed, o.lateralSpeed, o.sink, o.tilt, o.limit, o.ttSeat].forEach((v, i) => w.f32(4 + 4 * i, v));
+  return new Uint8Array(w.buf);
+}
+// catch_config (0x161): u8 landingMode, 3 pad, then 19 f32 (seat 3, dir 2, staging, tower 2, mast 2, hinge 2, arm 3, window 4).
+export function packCatchConfig(o) {
+  const w = writer(USER_LENGTH[0x161]);
+  w.u8(0, o.landingMode);
+  [...o.seat, ...o.dir, o.staging, ...o.tower, o.mastHalf, o.mastHeight, o.hingeHalf, o.hingeSetback, o.armLen, o.armOpen, o.armClosed,
+    o.winLat, o.winAlong, o.winSink, o.winTilt].forEach((v, i) => w.f32(4 + 4 * i, v));
   return new Uint8Array(w.buf);
 }

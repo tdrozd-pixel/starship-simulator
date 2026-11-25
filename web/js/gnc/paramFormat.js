@@ -6,7 +6,7 @@
 //   "derived.tilt"                             computed by gncModel (not a dictionary field)
 // Packet and field names come from the generated dictionary tables and are validated by
 // parseParam, so a dictionary change cannot silently break a screen (a unit test walks every screen).
-import { PACKETS, ENUMS, RAD2DEG } from './gncPackets.js';
+import { PACKETS, ENUMS, RAD2DEG, NUM_ENGINES } from './gncPackets.js';
 import { RECORDS } from './gncPackets.generated.js';
 import { fmt, fmtSigned, formatLatitude, formatLongitude } from './gncModel.js';
 
@@ -14,8 +14,18 @@ import { fmt, fmtSigned, formatLatitude, formatLongitude } from './gncModel.js';
 export const DERIVED = {
   tilt: 'deg', roll: 'deg', throttle: '%', attX: 'deg', attY: 'deg', attZ: 'deg',
   rawEast: 'm', rawNorth: 'm', rawDist: 'm', rawBearing: 'deg', navEast: 'm', navNorth: 'm', navDist: 'm',
-  gnssAge: 's',
+  gnssAge: 's', attErrMag: 'deg',
+  gnssInnovMag: 'm', gnssUpdAge: 's', altUpdAge: 's',
+  predTtg: 's', predTtgSp: 's', predEast: 'm', predNorth: 'm', predMiss: 'm', predMissSp: 'm', predGo: '',
+  gimCmdPct: '%', gimMeasPct: '%', gimErr: 'deg', thrCmd: '%', thrAct: '%', thrDev: 'pp', thrSpread: 'pp', rvacStatus: '',
+  // Boolean lamps (model.lamps[name], arrays per engine for the indexed ones).
+  diffThrottle: '', gimWarn: '', gimLimit: '', thrMax: '', engInvalid: '', predNoGo: '',
+  gnssStaleAmber: '', gnssStaleRed: '', altStaleAmber: '', altStaleRed: '',
+  // Catch: mirrored funnel edge (stored column, chart only), lateral side text and the NO-GO lamp.
+  negLateralLimit: 'm', catchSide: '', catchNoGo: '',
 };
+// Derived names that carry one value per engine ("derived.gimCmdPct[1]").
+export const DERIVED_PER_ENGINE = new Set(['gimCmdPct', 'gimMeasPct', 'gimErr', 'thrCmd', 'thrAct', 'thrDev', 'gimWarn', 'gimLimit', 'thrMax', 'engInvalid']);
 
 const RE = /^([a-z_]+)\.([A-Za-z]+)(?:\[(\d+)\])?(?:\.([A-Za-z]+))?$/;
 const parsed = new Map();
@@ -33,7 +43,11 @@ function parseUncached(path) {
   if (!m) return null;
   const [, pk, name, idxText, sub] = m;
   const index = idxText === undefined ? null : Number(idxText);
-  if (pk === 'derived') return name in DERIVED && index === null && !sub ? { path, derived: true, key: name, unit: DERIVED[name] } : null;
+  if (pk === 'derived') {
+    const per = DERIVED_PER_ENGINE.has(name);
+    const okIndex = per ? index !== null && index < NUM_ENGINES : index === null;
+    return name in DERIVED && okIndex && !sub ? { path, derived: true, key: name, index, unit: DERIVED[name] } : null;
+  }
   const packet = PACKETS[pk];
   const field = packet && packet.fields.find((f) => f.name === name);
   if (!field || field.type === 'pad') return null;
@@ -49,6 +63,12 @@ function parseUncached(path) {
 }
 
 export function isValidParam(path) { return parseParam(path) !== null; }
+
+// Boolean value of a derived lamp parameter (model.lamps), for lamp widgets.
+export function derivedLamp(model, p) {
+  const v = model.lamps[p.key];
+  return !!(p.index !== null && v ? v[p.index] : v);
+}
 
 // Raw decoded value from the store, or undefined when that packet has not arrived.
 export function resolveParam(store, p) {
@@ -78,7 +98,11 @@ export function paramUnit(spec) {
 export function formatParam(spec, store, model) {
   const p = parseParam(spec.param);
   if (!p) return '--';
-  if (p.derived) { const t = model.text[p.key]; return t === undefined ? '--' : t; }
+  if (p.derived) {
+    let t = model.text[p.key];
+    if (p.index !== null && t !== undefined) t = t[p.index];
+    return t === undefined ? '--' : t;
+  }
   const v = resolveParam(store, p);
   if (v === undefined) return '--';
   if (p.bit || typeof v === 'boolean') {

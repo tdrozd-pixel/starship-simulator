@@ -93,6 +93,8 @@ canvas.attitude { height: 260px; border: 1px solid var(--edge); }
 .lamps { display: flex; gap: 6px; flex-wrap: wrap; }
 .lamp { padding: 1px 6px; border-radius: 3px; background: #26303f; color: #7a889c; font-size: 11px; }
 .lamp.on { background: var(--green); color: #000; }
+.lamp.amber.on { background: var(--amber); }
+.lamp.red.on { background: var(--red); color: #fff; }
 
 .chart-cell { min-width: 0; }
 .chart { background: var(--panel); border: 1px solid var(--edge); border-radius: 4px; padding: 4px 6px; min-width: 0; }
@@ -102,3 +104,4 @@ canvas.attitude { height: 260px; border: 1px solid var(--edge); }
 .chart-body { height: clamp(215px, 27vh, 330px); overflow: hidden; }
 .stack:has(> .chart-cell:nth-child(3)) .chart-body { height: 215px; }
 .uplot { color: var(--text); }
+canvas.corridor { height: 380px; width: 100%; border: 1px solid var(--edge); display: block; }

@@ -2,6 +2,7 @@
 // live here (collected on every screen); draw(canvas, ...) paints them on whichever canvas is shown.
 import { fitCanvas, COLORS } from './canvasUtil.js';
 import { geodeticToEnu } from './geodesy.js';
+import { mastCorners, armSegment, approachLine, hasApproachLine } from './corridorView.js';
 
 // Pad radius is a placeholder: the downlinked config carries only the alignment tolerance.
 export const PAD_RADIUS = 9; // [m] PLACEHOLDER, not a sourced pad dimension
@@ -31,8 +32,8 @@ export function createMapView() {
   }
 
   const tmp = [0, 0, 0];
-  // frame: target ENU frame or null; cfg: mission config or null; sp: {east,north} or null; cur: nav {east,north} or null.
-  function draw(canvas, frame, cfg, sp, cur) {
+  // catchCfg: catch_config or null (tower, arms, approach line). frame: target ENU frame or null; cfg: mission config or null; sp: {east,north} or null; cur: nav {east,north} or null.
+  function draw(canvas, frame, cfg, sp, cur, catchCfg = null) {
     const { ctx, w, h } = fitCanvas(canvas);
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, w, h);
@@ -49,6 +50,13 @@ export function createMapView() {
       }
     }
     if (sp) ext = Math.max(ext, Math.abs(sp.east), Math.abs(sp.north));
+    let tower = null;
+    if (catchCfg) {
+      tower = { mast: mastCorners(catchCfg), arms: [armSegment(catchCfg, 1, false), armSegment(catchCfg, -1, false)], line: approachLine(catchCfg) };
+      const pts = [...tower.mast, tower.line.staging, tower.line.seat];
+      for (const a of tower.arms) pts.push(a.hinge, a.tip);
+      for (const q of pts) ext = Math.max(ext, Math.abs(q[0]), Math.abs(q[1]));
+    }
     ext *= 1.15;
     let want = NICE[NICE.length - 1];
     for (const n of NICE) if (n >= ext) { want = n; break; }
@@ -71,6 +79,29 @@ export function createMapView() {
       ctx.strokeStyle = COLORS.green; ctx.setLineDash([4, 3]);
       ctx.beginPath(); ctx.arc(cx, cy, Math.max(1, cfg.alignTolerance * scale), 0, 2 * Math.PI); ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    // Catch tower: mast square, arms (open pose from the config, not live) and the approach line.
+    if (tower) {
+      ctx.fillStyle = '#5a6678'; ctx.strokeStyle = '#8a97aa'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      tower.mast.forEach((q, i) => (i ? ctx.lineTo(X(q[0]), Y(q[1])) : ctx.moveTo(X(q[0]), Y(q[1]))));
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#6aa0ff'; ctx.lineWidth = 3;
+      for (const a of tower.arms) { ctx.beginPath(); ctx.moveTo(X(a.hinge[0]), Y(a.hinge[1])); ctx.lineTo(X(a.tip[0]), Y(a.tip[1])); ctx.stroke(); }
+      if (catchCfg.landingMode === 1) {
+        // The vertical catch has no staging point: the Ship translates over the seat early, so mark the seat only.
+        // (With a staging distance, as in an older sequence, draw the approach line too.)
+        const { staging, seat } = tower.line;
+        ctx.fillStyle = COLORS.cyan;
+        if (hasApproachLine(catchCfg)) {
+          ctx.strokeStyle = COLORS.cyan; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+          ctx.beginPath(); ctx.moveTo(X(staging[0]), Y(staging[1])); ctx.lineTo(X(seat[0]), Y(seat[1])); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillRect(X(staging[0]) - 2.5, Y(staging[1]) - 2.5, 5, 5);
+        }
+        ctx.beginPath(); ctx.arc(X(seat[0]), Y(seat[1]), 3, 0, 2 * Math.PI); ctx.fill();
+      }
     }
 
     // Nav trail.

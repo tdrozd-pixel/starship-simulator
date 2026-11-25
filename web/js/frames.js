@@ -17,6 +17,11 @@ export function threeToEnu(X, Y, Z, out) {
   return out;
 }
 
+// A heading in the ENU plane, atan2(north, east) [rad], becomes a rotation about three's Y axis
+// that turns local +X onto that direction: Ry(a) maps +X to (cos a, 0, -sin a) and ENU (e, n)
+// maps to three (e, 0, -n), so the angle is unchanged.
+export function enuHeadingToThreeYaw(heading) { return heading; }
+
 // Output order is three's Quaternion.set(x, y, z, w).
 export function bodyQuatToThree(w, x, y, z, out) {
   out[0] = x; out[1] = z; out[2] = -y; out[3] = w;

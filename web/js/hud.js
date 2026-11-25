@@ -11,7 +11,7 @@ export function createHud(handlers) {
     conn: $('conn'), run: $('run'), scenario: $('scenario'), timescale: $('timescale'),
     met: $('met'), lampEngine: $('lamp-engine'), lampTd: $('lamp-td'),
     lampFin: $('lamp-fin'), waiting: $('waiting'), restart: $('btn-restart'), resetView: $('btn-reset'),
-    banner: $('banner'),
+    banner: $('banner'), result: $('result'),
     rec: $('btn-rec'), recRes: $('rec-res'), recFps: $('rec-fps'), recHud: $('rec-hud'), recStatus: $('rec-status'),
   };
   const values = {};
@@ -76,6 +76,12 @@ export function createHud(handlers) {
       setLamp(el.lampEngine, t.engine);
       setLamp(el.lampTd, t.touchdown);
       setLamp(el.lampFin, t.finished);
+      el.result.style.display = t.result ? 'block' : 'none';
+      if (t.result) {
+        el.result.textContent = t.result;
+        el.result.style.background = t.result === 'CAUGHT' ? '#4ccf6a' : '#e04848';
+        el.result.style.color = t.result === 'CAUGHT' ? '#000' : '#fff';
+      }
     },
 
     // Recorder controls (DOM only: never drawn into the video).
