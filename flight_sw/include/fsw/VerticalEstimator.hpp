@@ -24,11 +24,15 @@ public:
 
     double altitude() const { return altitude_; }
     double velocity() const { return velocity_; }
+    // Latest altimeter residual, measured minus estimated altitude before the correction [m].
+    // This is a fixed-gain filter: there is no covariance, so no sigma is available.
+    double altitudeInnovation() const { return altitudeInnovation_; }
 
 private:
     Config config_;
     double altitude_ = 0.0;
     double velocity_ = 0.0;
+    double altitudeInnovation_ = 0.0;  // [m]
 };
 
 }  // namespace fsw

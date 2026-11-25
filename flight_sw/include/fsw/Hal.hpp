@@ -9,8 +9,12 @@
 
 namespace fsw {
 
-// Engines this flight computer controls (Ship sea-level Raptors).
-constexpr int kEngineCount = 3;
+// Engines this flight computer controls. Index 0..2 are the three sea-level Raptors
+// (inner ring, gimbaled); index 3..5 are the three Raptor Vacuums (outer ring, fixed).
+constexpr int kSeaLevelEngineCount = 3;  // gimbaled
+constexpr int kRvacCount = 3;            // not gimbaled
+constexpr int kEngineCount = kSeaLevelEngineCount + kRvacCount;
+constexpr int kFirstRvac = kSeaLevelEngineCount;  // index of the first RVac
 
 struct ImuSample {
     double stamp = 0.0;  // [s]
@@ -47,23 +51,46 @@ struct GnssSample {
     int satellitesUsed = 0;
 };
 
-// Measured gimbal positions from the gimbal position sensors.
+// Measured gimbal positions from the gimbal position sensors (sea-level engines only;
+// the RVacs have no gimbal).
 struct GimbalFeedbackSample {
     double stamp = 0.0;  // [s]
-    bool valid[kEngineCount] = {};
-    double pitch[kEngineCount] = {};  // about body x [rad]
-    double yaw[kEngineCount] = {};    // about body y [rad]
+    bool valid[kSeaLevelEngineCount] = {};
+    double pitch[kSeaLevelEngineCount] = {};  // about body x [rad]
+    double yaw[kSeaLevelEngineCount] = {};    // about body y [rad]
 };
 
+// Engine controller state as reported by the engine.
+enum class EngineState : int {
+    Off = 0,
+    Starting = 1,   // commanded on, start sequence in progress
+    Running = 2,
+    Inhibited = 3,  // commanded on but refused (flow separation or start inhibit)
+};
+
+// Measured engine throttle and state, all six engines.
+struct EngineFeedbackSample {
+    double stamp = 0.0;  // [s]
+    bool valid[kEngineCount] = {};
+    double throttle[kEngineCount] = {};  // measured actual, fraction of rated flow
+    EngineState state[kEngineCount] = {};
+};
+
+// Per engine (all six): on/off and the throttle (power setting) command.
 struct EngineCommand {
     bool on = false;
-    double throttle = 0.0;     // fraction of rated mass flow
-    double gimbalPitch = 0.0;  // [rad], about body x
-    double gimbalYaw = 0.0;    // [rad], about body y
+    double throttle = 0.0;  // fraction of rated mass flow
+};
+
+// Per sea-level engine only (the RVacs are fixed).
+struct GimbalCommand {
+    double pitch = 0.0;  // [rad], about body x
+    double yaw = 0.0;    // [rad], about body y
 };
 
 struct ActuatorCommand {
     EngineCommand engines[kEngineCount];
+    GimbalCommand gimbals[kSeaLevelEngineCount];
 };
 
 struct Telemetry {
@@ -96,6 +123,7 @@ public:
     virtual AltimeterSample readAltimeter() = 0;
     virtual GnssSample readGnss() = 0;
     virtual GimbalFeedbackSample readGimbalFeedback() = 0;
+    virtual EngineFeedbackSample readEngineFeedback() = 0;
     virtual void commandActuators(const ActuatorCommand& command) = 0;
     virtual void publishTelemetry(const Telemetry& telemetry) = 0;
     // Send one complete CCSDS packet down the telemetry link (fire and forget).

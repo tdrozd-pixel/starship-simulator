@@ -9,6 +9,7 @@ void SimHal::bind(Bus& bus) {
     altimeter_ = &bus.channel<AltimeterMsg>(channels::kAltimeter);
     gnss_ = &bus.channel<GnssMsg>(channels::kGnss);
     gimbalFeedback_ = &bus.channel<GimbalFeedbackMsg>(channels::kGimbalFeedback);
+    engineFeedback_ = &bus.channel<EngineFeedbackMsg>(channels::kEngineFeedback);
     commands_ = &bus.channel<ActuatorCommandMsg>(channels::kActuatorCmd);
     telemetry_ = &bus.channel<FswTelemetryMsg>(channels::kFswTelemetry);
 }
@@ -58,10 +59,22 @@ fsw::GimbalFeedbackSample SimHal::readGimbalFeedback() {
     fsw::GimbalFeedbackSample sample;
     const auto& msg = gimbalFeedback_->latest();
     sample.stamp = msg.stamp;
-    for (int i = 0; i < kEngineCount; ++i) {
+    for (int i = 0; i < kSeaLevelEngineCount; ++i) {
         sample.valid[i] = msg.valid() && msg.data.valid[i];
         sample.pitch[i] = msg.data.pitch[i];
         sample.yaw[i] = msg.data.yaw[i];
+    }
+    return sample;
+}
+
+fsw::EngineFeedbackSample SimHal::readEngineFeedback() {
+    fsw::EngineFeedbackSample sample;
+    const auto& msg = engineFeedback_->latest();
+    sample.stamp = msg.stamp;
+    for (int i = 0; i < kEngineCount; ++i) {
+        sample.valid[i] = msg.valid() && msg.data.valid[i];
+        sample.throttle[i] = msg.data.throttle[i];
+        sample.state[i] = msg.data.state[i];
     }
     return sample;
 }
@@ -70,7 +83,10 @@ void SimHal::commandActuators(const fsw::ActuatorCommand& command) {
     ActuatorCommandMsg msg;
     for (int i = 0; i < kEngineCount; ++i) {
         const fsw::EngineCommand& c = command.engines[i];
-        msg.engines[i] = EngineCommandMsg{c.on, c.throttle, c.gimbalPitch, c.gimbalYaw};
+        msg.engines[i] = EngineCommandMsg{c.on, c.throttle};
+    }
+    for (int i = 0; i < kSeaLevelEngineCount; ++i) {
+        msg.gimbals[i] = GimbalCommandMsg{command.gimbals[i].pitch, command.gimbals[i].yaw};
     }
     commands_->publish(msg, time_);
 }

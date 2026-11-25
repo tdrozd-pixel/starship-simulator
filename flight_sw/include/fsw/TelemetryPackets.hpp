@@ -65,6 +65,27 @@ inline void encode(const GncEngine& p, uint8_t* out) {
     detail::putF32(out + 12, p.yaw);
 }
 
+// Record engine_power, 12 bytes: Per-engine power setting and measured state in the engine status packet (all six engines: sea-level 0 to 2, RVac 3 to 5).
+constexpr std::size_t kEnginePowerSize = 12;  // [bytes]
+struct EnginePower {
+    bool on{};  // engine commanded on
+    uint8_t state{};  // engine controller state as reported by the engine (inhibited: commanded on but refused, e.g. RVac flow separation at high ambient pressure)
+    bool valid{};  // engine feedback reading is valid
+    float command{};  // [fraction] power setting command, fraction of rated flow (0 when commanded off)
+    float throttle{};  // [fraction] actual throttle, measured by the engine feedback sensor (not the command)
+};
+
+// Writes the 12-byte record at `out`; pad bytes are zeroed.
+inline void encode(const EnginePower& p, uint8_t* out) {
+    std::memset(out, 0, kEnginePowerSize);
+    detail::putU8(out + 0, static_cast<uint8_t>(p.on ? 1U : 0U));
+    detail::putU8(out + 1, p.state);
+    detail::putU8(out + 2, static_cast<uint8_t>(p.valid ? 1U : 0U));
+    // pad: 1 zero byte(s) at offset 3
+    detail::putF32(out + 4, p.command);
+    detail::putF32(out + 8, p.throttle);
+}
+
 // Record feedback_engine, 12 bytes: Per-engine measured gimbal position in the actuator feedback packet.
 constexpr std::size_t kFeedbackEngineSize = 12;  // [bytes]
 struct FeedbackEngine {
@@ -138,7 +159,7 @@ inline void encode(const MissionConfig& p, uint8_t* out) {
 
 // 0x110 Navigation: Estimates are the flight software's; "measured" values are the latest raw sensor readings.
 constexpr uint16_t kNavigationApid = 0x110;
-constexpr std::size_t kNavigationUserDataLength = 80;  // [bytes]
+constexpr std::size_t kNavigationUserDataLength = 116;  // [bytes]
 constexpr uint32_t kNavigationPeriodCycles = 2;  // [flight computer cycles at 100 Hz] 50 Hz
 struct Navigation {
     std::array<float, 4> attitude{};  // components w, x, y, z; estimated, body to local ENU
@@ -154,9 +175,18 @@ struct Navigation {
     float velocityNorth{};  // [m/s] estimated
     float accelBiasEast{};  // [m/s^2] estimated apparent acceleration bias
     float accelBiasNorth{};  // [m/s^2] estimated apparent acceleration bias
+    float positionSigmaEast{};  // [m] 1-sigma east position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts
+    float positionSigmaNorth{};  // [m] 1-sigma north position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts
+    float velocitySigmaEast{};  // [m/s] 1-sigma east velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts
+    float velocitySigmaNorth{};  // [m/s] 1-sigma north velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts
+    float gnssInnovationEast{};  // [m] latest GNSS east position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now)
+    float gnssInnovationNorth{};  // [m] latest GNSS north position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now)
+    float altimeterInnovation{};  // [m] latest altimeter residual: tilt-compensated measured altitude minus estimated altitude before the correction. The vertical estimator is a fixed-gain complementary filter, so there is no vertical sigma
+    float gnssUpdateAge{};  // [s] time since the last accepted GNSS fix; -1 if none accepted yet. No measurement gating exists, so there is no rejected count
+    float altimeterUpdateAge{};  // [s] time since the last accepted altimeter reading; -1 if none accepted yet. No measurement gating exists, so there is no rejected count
 };
 
-// Writes the 80 bytes of user data at `out`; pad bytes are zeroed.
+// Writes the 116 bytes of user data at `out`; pad bytes are zeroed.
 inline void encode(const Navigation& p, uint8_t* out) {
     std::memset(out, 0, kNavigationUserDataLength);
     for (std::size_t i = 0; i < 4; ++i) {
@@ -179,6 +209,15 @@ inline void encode(const Navigation& p, uint8_t* out) {
     detail::putF32(out + 68, p.velocityNorth);
     detail::putF32(out + 72, p.accelBiasEast);
     detail::putF32(out + 76, p.accelBiasNorth);
+    detail::putF32(out + 80, p.positionSigmaEast);
+    detail::putF32(out + 84, p.positionSigmaNorth);
+    detail::putF32(out + 88, p.velocitySigmaEast);
+    detail::putF32(out + 92, p.velocitySigmaNorth);
+    detail::putF32(out + 96, p.gnssInnovationEast);
+    detail::putF32(out + 100, p.gnssInnovationNorth);
+    detail::putF32(out + 104, p.altimeterInnovation);
+    detail::putF32(out + 108, p.gnssUpdateAge);
+    detail::putF32(out + 112, p.altimeterUpdateAge);
 }
 
 // 0x120 Guidance and control: Guidance setpoints, control commands and the per-engine commands sent to the actuators.
@@ -229,6 +268,22 @@ inline void encode(const ActuatorFeedback& p, uint8_t* out) {
     }
 }
 
+// 0x150 Engine status: Power setting command, measured throttle and state of all six engines (three sea-level Raptors, then three Raptor Vacuums). A separate packet so the guidance and actuator feedback layouts (sea-level engines only) are unchanged.
+constexpr uint16_t kEngineStatusApid = 0x150;
+constexpr std::size_t kEngineStatusUserDataLength = 72;  // [bytes]
+constexpr uint32_t kEngineStatusPeriodCycles = 5;  // [flight computer cycles at 100 Hz] 20 Hz
+struct EngineStatus {
+    std::array<EnginePower, 6> engines{};  // per engine; index 0 to 2 sea-level, 3 to 5 RVac
+};
+
+// Writes the 72 bytes of user data at `out`; pad bytes are zeroed.
+inline void encode(const EngineStatus& p, uint8_t* out) {
+    std::memset(out, 0, kEngineStatusUserDataLength);
+    for (std::size_t i = 0; i < 6; ++i) {
+        encode(p.engines[i], out + 0 + 12 * i);
+    }
+}
+
 // 0x140 GNSS: The latest receiver solution as the flight computer received it.
 constexpr uint16_t kGnssApid = 0x140;
 constexpr std::size_t kGnssUserDataLength = 56;  // [bytes]
@@ -262,6 +317,101 @@ inline void encode(const Gnss& p, uint8_t* out) {
     }
     detail::putF32(out + 48, p.horizontalSigma);
     detail::putF32(out + 52, p.verticalSigma);
+}
+
+// 0x160 Catch status: Catch state computed by the flight software (phase, abort reason, go/no-go flags and the errors against the seat). The Ship translates to a point over the seat early and descends vertically between the open arms, so the phases Approach, Hold and Final are height bands of one vertical descent (Hold = the arms are expected to be closing). The arm state is NOT downlinked to the flight computer: armsExpected is what the sequence expects (time since the arms-closing height), not a measurement. Along and lateral are the horizontal offset from the seat point in the tower approach frame: alongRemaining positive = short of the seat point, lateral positive toward the +b side (b = approach direction rotated +90 deg). The go/no-go flags are the flight software gates (about 2x the physical catch window, tapering with height above the seat), not the window itself. The u8 block is 4 bytes so every f32 is 4-byte aligned.
+constexpr uint16_t kCatchStatusApid = 0x160;
+constexpr std::size_t kCatchStatusUserDataLength = 40;  // [bytes]
+constexpr uint32_t kCatchStatusPeriodCycles = 10;  // [flight computer cycles at 100 Hz] 10 Hz
+struct CatchStatus {
+    uint8_t phase{};  // catch phase
+    uint8_t abortReason{};  // reason for the last abort; 0 if none
+    uint8_t armsExpected{};  // arm state expected per the sequence (time since the arms-closing height), not measured
+    bool go{};  // flags bit 0: all conditions go
+    bool positionOk{};  // flags bit 1: horizontal error to the seat within the funnel for this height
+    bool speedOk{};  // flags bit 2: horizontal speed and sink rate within their gates for this height
+    bool tiltOk{};  // flags bit 3: tilt and heading within their gates for this height
+    bool rtkOk{};  // flags bit 4: RTK fixed solution available
+    bool corridorOk{};  // flags bit 5: lateral error inside the funnel for this height
+    bool aborted{};  // flags bit 6: catch aborted, flying the pad fallback
+    float alongRemaining{};  // [m] horizontal offset along the approach axis from the seat point; positive = short of the seat (the Ship descends over the seat, so this is near zero in a good run)
+    float lateralError{};  // [m] lateral offset from the seat point; positive = +b side
+    float pinHeightAboveSeat{};  // [m] catch pin height above the seated pin height
+    float alongSpeed{};  // [m/s] estimated horizontal velocity along the approach axis
+    float lateralSpeed{};  // [m/s] estimated lateral velocity
+    float sinkRate{};  // [m/s] estimated sink rate, positive down
+    float tilt{};  // [rad] estimated tilt from vertical
+    float lateralLimit{};  // [m] funnel: horizontal error allowed at the current height above the seat (about 1.2 m at the seat, widening with height)
+    float timeToSeat{};  // [s] estimated time to the seat from the vertical motion (constant deceleration from the sink rate to the contact sink rate); -1 if not descending
+};
+
+// Writes the 40 bytes of user data at `out`; pad bytes are zeroed.
+inline void encode(const CatchStatus& p, uint8_t* out) {
+    std::memset(out, 0, kCatchStatusUserDataLength);
+    detail::putU8(out + 0, p.phase);
+    detail::putU8(out + 1, p.abortReason);
+    detail::putU8(out + 2, p.armsExpected);
+    detail::putU8(out + 3, static_cast<uint8_t>((p.go ? 1U : 0U) | (p.positionOk ? 2U : 0U) | (p.speedOk ? 4U : 0U) | (p.tiltOk ? 8U : 0U) | (p.rtkOk ? 16U : 0U) | (p.corridorOk ? 32U : 0U) | (p.aborted ? 64U : 0U)));
+    detail::putF32(out + 4, p.alongRemaining);
+    detail::putF32(out + 8, p.lateralError);
+    detail::putF32(out + 12, p.pinHeightAboveSeat);
+    detail::putF32(out + 16, p.alongSpeed);
+    detail::putF32(out + 20, p.lateralSpeed);
+    detail::putF32(out + 24, p.sinkRate);
+    detail::putF32(out + 28, p.tilt);
+    detail::putF32(out + 32, p.lateralLimit);
+    detail::putF32(out + 36, p.timeToSeat);
+}
+
+// 0x161 Catch config: Catch geometry and window limits the flight software is configured with (mission data). Target-frame local ENU, metres and radians. The u8 is followed by 3 pad bytes so every f32 is 4-byte aligned.
+constexpr uint16_t kCatchConfigApid = 0x161;
+constexpr std::size_t kCatchConfigUserDataLength = 80;  // [bytes]
+constexpr uint32_t kCatchConfigPeriodCycles = 100;  // [flight computer cycles at 100 Hz] 1 Hz
+struct CatchConfig {
+    uint8_t landingMode{};  // landing mode (`fsw::LandingMode`)
+    std::array<float, 3> seatPoint{};  // [m] east, north, seated base altitude; target frame
+    std::array<float, 2> approachDir{};  // unit vector east, north, toward the tower from the approach side (defines along and lateral)
+    float stagingDistance{};  // [m] distance of the translation target before the seat point along the approach axis; 0 = the Ship translates to a point straight over the seat and descends vertically
+    std::array<float, 2> towerPosition{};  // [m] tower centerline east, north
+    float mastHalfWidth{};  // [m] tower mast half width (square)
+    float mastHeight{};  // [m] tower mast height
+    float hingeHalfSpacing{};  // [m] arm hinge lateral offset from the approach axis
+    float hingeSetback{};  // [m] arm hinge distance from the tower center along the approach axis
+    float armLength{};  // [m] arm length from the hinge
+    float armOpenAngle{};  // [rad] open arm direction, outward from the approach axis
+    float armClosedAngle{};  // [rad] closed arm direction, inward from the approach axis
+    float windowLateral{};  // [m] catch window lateral limit
+    float windowAlong{};  // [m] catch window along limit
+    float windowSink{};  // [m/s] catch window sink rate limit
+    float windowTilt{};  // [rad] catch window tilt limit
+};
+
+// Writes the 80 bytes of user data at `out`; pad bytes are zeroed.
+inline void encode(const CatchConfig& p, uint8_t* out) {
+    std::memset(out, 0, kCatchConfigUserDataLength);
+    detail::putU8(out + 0, p.landingMode);
+    // pad: 3 zero byte(s) at offset 1
+    for (std::size_t i = 0; i < 3; ++i) {
+        detail::putF32(out + 4 + 4 * i, p.seatPoint[i]);
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+        detail::putF32(out + 16 + 4 * i, p.approachDir[i]);
+    }
+    detail::putF32(out + 24, p.stagingDistance);
+    for (std::size_t i = 0; i < 2; ++i) {
+        detail::putF32(out + 28 + 4 * i, p.towerPosition[i]);
+    }
+    detail::putF32(out + 36, p.mastHalfWidth);
+    detail::putF32(out + 40, p.mastHeight);
+    detail::putF32(out + 44, p.hingeHalfSpacing);
+    detail::putF32(out + 48, p.hingeSetback);
+    detail::putF32(out + 52, p.armLength);
+    detail::putF32(out + 56, p.armOpenAngle);
+    detail::putF32(out + 60, p.armClosedAngle);
+    detail::putF32(out + 64, p.windowLateral);
+    detail::putF32(out + 68, p.windowAlong);
+    detail::putF32(out + 72, p.windowSink);
+    detail::putF32(out + 76, p.windowTilt);
 }
 
 }  // namespace fsw::telemetry

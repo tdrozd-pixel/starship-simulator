@@ -55,7 +55,13 @@ void encodeSnapshot(const vehicle::TruthSnapshot& s, WireSnapshot& out) noexcept
     putU16(b + kOffVersion, kProtocolVersion);
     putU16(b + kOffType, kMsgTruthSnapshot);
     putU32(b + kOffRunId, s.runId);
-    putU32(b + kOffFlags, s.flags);
+    uint32_t flags = s.flags & ~kFlagEngineMask;
+    for (std::size_t i = 0; i < vehicle::kEngineCount; ++i) {
+        if (s.engineRunning[i]) {
+            flags |= 1u << (kFlagEngine0Shift + i);
+        }
+    }
+    putU32(b + kOffFlags, flags);
     putU64(b + kOffStep, s.step);
     putF64(b + kOffSimTime, s.simTime);
     for (std::size_t i = 0; i < 3; ++i) {
@@ -71,6 +77,18 @@ void encodeSnapshot(const vehicle::TruthSnapshot& s, WireSnapshot& out) noexcept
     putF64(b + kOffGimbalYaw, s.gimbalYaw);
     putF64(b + kOffPropellantMass, s.propellantMass);
     putF64(b + kOffTotalMass, s.totalMass);
+    for (std::size_t i = 0; i < vehicle::kEngineCount; ++i) {
+        putF64(b + kOffEngineThrottle + 8 * i, s.engineThrottle[i]);
+    }
+    for (std::size_t i = 0; i < vehicle::kSeaLevelEngineCount; ++i) {
+        putF64(b + kOffEngineGimbalPitch + 8 * i, s.engineGimbalPitch[i]);
+        putF64(b + kOffEngineGimbalYaw + 8 * i, s.engineGimbalYaw[i]);
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+        putF64(b + kOffArmAngle + 8 * i, s.armAngle[i]);
+    }
+    putU32(b + kOffTowerState, s.towerState);
+    putU32(b + kOffCatchResult, s.catchResult);
 }
 
 bool decodeSnapshot(const uint8_t* b, std::size_t size, vehicle::TruthSnapshot& s) {
@@ -84,7 +102,11 @@ bool decodeSnapshot(const uint8_t* b, std::size_t size, vehicle::TruthSnapshot& 
         return false;
     }
     s.runId = getU32(b + kOffRunId);
-    s.flags = getU32(b + kOffFlags);
+    const uint32_t wireFlags = getU32(b + kOffFlags);
+    s.flags = wireFlags & ~kFlagEngineMask;
+    for (std::size_t i = 0; i < vehicle::kEngineCount; ++i) {
+        s.engineRunning[i] = ((wireFlags >> (kFlagEngine0Shift + i)) & 1u) != 0;
+    }
     s.step = getU64(b + kOffStep);
     s.simTime = getF64(b + kOffSimTime);
     for (std::size_t i = 0; i < 3; ++i) {
@@ -100,6 +122,18 @@ bool decodeSnapshot(const uint8_t* b, std::size_t size, vehicle::TruthSnapshot& 
     s.gimbalYaw = getF64(b + kOffGimbalYaw);
     s.propellantMass = getF64(b + kOffPropellantMass);
     s.totalMass = getF64(b + kOffTotalMass);
+    for (std::size_t i = 0; i < vehicle::kEngineCount; ++i) {
+        s.engineThrottle[i] = getF64(b + kOffEngineThrottle + 8 * i);
+    }
+    for (std::size_t i = 0; i < vehicle::kSeaLevelEngineCount; ++i) {
+        s.engineGimbalPitch[i] = getF64(b + kOffEngineGimbalPitch + 8 * i);
+        s.engineGimbalYaw[i] = getF64(b + kOffEngineGimbalYaw + 8 * i);
+    }
+    for (std::size_t i = 0; i < 2; ++i) {
+        s.armAngle[i] = getF64(b + kOffArmAngle + 8 * i);
+    }
+    s.towerState = getU32(b + kOffTowerState);
+    s.catchResult = getU32(b + kOffCatchResult);
     return true;
 }
 

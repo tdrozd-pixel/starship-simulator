@@ -66,17 +66,32 @@ TEST_CASE(snapshot_wire_layout) {
     s.gimbalYaw = 17.0;
     s.propellantMass = 18.0;
     s.totalMass = 19.0;
+    for (int i = 0; i < 6; ++i) {
+        s.engineThrottle[i] = 20.0 + i;
+    }
+    for (int i = 0; i < 3; ++i) {
+        s.engineGimbalPitch[i] = 30.0 + i;
+        s.engineGimbalYaw[i] = 40.0 + i;
+    }
+    s.engineRunning[0] = true;
+    s.engineRunning[2] = true;
+    s.engineRunning[5] = true;
+    s.armAngle[0] = 0.5;
+    s.armAngle[1] = -0.25;
+    s.towerState = 3;
+    s.catchResult = 1;
 
     WireSnapshot w{};
     encodeSnapshot(s, w);
-    static_assert(kSnapshotWireSize == 176);
-    static_assert(sizeof(WireSnapshot) == 176);
+    static_assert(kSnapshotWireSize == 296);
+    static_assert(sizeof(WireSnapshot) == 296);
     CHECK(w[0] == 'S' && w[1] == 'S' && w[2] == 'T' && w[3] == 'R');
-    CHECK(readLe(w.data() + 4, 2) == 1);
+    CHECK(readLe(w.data() + 4, 2) == 3);
     CHECK(readLe(w.data() + 6, 2) == 1);
     CHECK(readLe(w.data() + 8, 4) == 0x01020304u);
     CHECK(w[8] == 0x04);  // little-endian: low byte first
-    CHECK(readLe(w.data() + 12, 4) == 5u);
+    // flags 5 plus engine bits 3 (engine 0), 5 (engine 2) and 8 (engine 5).
+    CHECK(readLe(w.data() + 12, 4) == (5u | (1u << 3) | (1u << 5) | (1u << 8)));
     CHECK(readLe(w.data() + 16, 8) == 0x1122334455667788ull);
 
     // Literal offsets from the protocol document, not the named constants.
@@ -85,8 +100,34 @@ TEST_CASE(snapshot_wire_layout) {
         CHECK_NEAR(readF64(w, offsets[i]), i == 0 ? 1.5 : static_cast<double>(i + 1), 1e-12);
     }
 
+    for (std::size_t i = 0; i < 6; ++i) {
+        CHECK_NEAR(readF64(w, 176 + 8 * i), 20.0 + static_cast<double>(i), 1e-12);
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK_NEAR(readF64(w, 224 + 8 * i), 30.0 + static_cast<double>(i), 1e-12);
+        CHECK_NEAR(readF64(w, 248 + 8 * i), 40.0 + static_cast<double>(i), 1e-12);
+    }
+
+    // Version 3 fields at literal offsets (little-endian f64 and u32).
+    CHECK_NEAR(readF64(w, 272), 0.5, 1e-12);
+    CHECK_NEAR(readF64(w, 280), -0.25, 1e-12);
+    CHECK(readLe(w.data() + 288, 4) == 3);
+    CHECK(readLe(w.data() + 292, 4) == 1);
+    CHECK(w[288] == 3 && w[289] == 0 && w[292] == 1);
+    // 0.5 = 0x3FE0000000000000, little-endian bytes 00 00 00 00 00 00 E0 3F.
+    CHECK(w[272] == 0 && w[277] == 0 && w[278] == 0xE0 && w[279] == 0x3F);
+
     TruthSnapshot d;
     CHECK(decodeSnapshot(w.data(), w.size(), d));
+    CHECK(d.flags == 5u);
+    CHECK(d.armAngle[0] == 0.5 && d.armAngle[1] == -0.25 && d.towerState == 3 && d.catchResult == 1);
+    for (int i = 0; i < 6; ++i) {
+        CHECK(d.engineRunning[i] == s.engineRunning[i]);
+        CHECK(d.engineThrottle[i] == s.engineThrottle[i]);
+    }
+    for (int i = 0; i < 3; ++i) {
+        CHECK(d.engineGimbalPitch[i] == s.engineGimbalPitch[i] && d.engineGimbalYaw[i] == s.engineGimbalYaw[i]);
+    }
     CHECK(d.runId == s.runId && d.flags == s.flags && d.step == s.step);
     CHECK(d.simTime == 1.5 && d.position[2] == 4.0 && d.velocity[0] == 5.0 && d.attitude[3] == 11.0);
     CHECK(d.angularRate[2] == 14.0 && d.throttle == 15.0 && d.gimbalPitch == 16.0 && d.gimbalYaw == 17.0);
@@ -97,6 +138,29 @@ TEST_CASE(snapshot_wire_layout) {
     CHECK(!decodeSnapshot(bad.data(), bad.size(), d));
     CHECK(!decodeSnapshot(w.data(), w.size() - 1, d));
     CHECK(!decodeSnapshot(w.data(), w.size() + 1, d));
+    WireSnapshot v1 = w;
+    v1[4] = 1;  // a version 1 frame is rejected
+    CHECK(!decodeSnapshot(v1.data(), v1.size(), d));
+    WireSnapshot v2 = w;
+    v2[4] = 2;  // a version 2 frame (even at the v3 length) is rejected
+    CHECK(!decodeSnapshot(v2.data(), v2.size(), d));
+    CHECK(!decodeSnapshot(w.data(), 272, d));  // a v2 length is rejected
+}
+
+TEST_CASE(wire_v3_caught_crashed_flags) {
+    TruthSnapshot s;
+    s.flags = sim::vehicle::kSnapCaught | sim::vehicle::kSnapHalted;
+    s.engineRunning[1] = true;
+    WireSnapshot w{};
+    encodeSnapshot(s, w);
+    CHECK(readLe(w.data() + 12, 4) == ((1u << 9) | (1u << 2) | (1u << 4)));
+    TruthSnapshot d;
+    CHECK(decodeSnapshot(w.data(), w.size(), d));
+    CHECK(d.flags == (sim::vehicle::kSnapCaught | sim::vehicle::kSnapHalted));
+    s.flags = sim::vehicle::kSnapCrashed;
+    encodeSnapshot(s, w);
+    CHECK(readLe(w.data() + 12, 4) == ((1u << 10) | (1u << 4)));
+    CHECK(sim::vehicle::kSnapCaught == (1u << 9) && sim::vehicle::kSnapCrashed == (1u << 10));
 }
 
 TEST_CASE(ring_orders_and_is_bounded) {
@@ -146,6 +210,14 @@ TruthSnapshot filled(uint64_t n) {
     s.gimbalYaw = d * 7;
     s.propellantMass = d * 8;
     s.totalMass = d * 9;
+    for (int i = 0; i < 6; ++i) {
+        s.engineThrottle[i] = d * 10 + i;
+        s.engineRunning[i] = ((n + static_cast<uint64_t>(i)) & 1u) != 0;
+    }
+    for (int i = 0; i < 3; ++i) {
+        s.engineGimbalPitch[i] = d * 11 + i;
+        s.engineGimbalYaw[i] = d * 12 + i;
+    }
     return s;
 }
 
@@ -158,6 +230,12 @@ bool consistent(const TruthSnapshot& s, uint64_t n) {
     }
     for (int i = 0; i < 4; ++i) {
         ok = ok && s.attitude[i] == e.attitude[i];
+    }
+    for (int i = 0; i < 6; ++i) {
+        ok = ok && s.engineThrottle[i] == e.engineThrottle[i] && s.engineRunning[i] == e.engineRunning[i];
+    }
+    for (int i = 0; i < 3; ++i) {
+        ok = ok && s.engineGimbalPitch[i] == e.engineGimbalPitch[i] && s.engineGimbalYaw[i] == e.engineGimbalYaw[i];
     }
     return ok && s.throttle == e.throttle && s.gimbalPitch == e.gimbalPitch && s.gimbalYaw == e.gimbalYaw &&
            s.propellantMass == e.propellantMass && s.totalMass == e.totalMass;
@@ -199,7 +277,16 @@ TEST_CASE(json_messages) {
     info.runId = 3;
     const std::string hello = makeHello(info);
     CHECK(hello.find("\"type\":\"hello\"") != std::string::npos);
-    CHECK(hello.find("\"protocol\":1") != std::string::npos);
+    CHECK(hello.find("\"protocol\":3") != std::string::npos);
+    CHECK(hello.find("\"tower\":{") != std::string::npos);
+    CHECK(hello.find("\"position\":[60,0]") != std::string::npos);
+    CHECK(hello.find("\"approachDir\":[-1,0]") != std::string::npos);
+    for (const char* key : {"mastHalfWidth", "mastHeight", "hingeHalfSpacing", "hingeSetback", "armLength", "armHalfWidth",
+                            "armThickness", "railHeight", "armOpenAngle", "armClosedAngle", "pinHeight", "pinOffset"}) {
+        CHECK(hello.find(std::string("\"") + key + "\":") != std::string::npos);
+    }
+    CHECK(hello.find("\"mastHeight\":145") != std::string::npos);
+    CHECK(hello.find("\"pinOffset\":5") != std::string::npos);
     CHECK(hello.find("\"snapshotRateHz\":100") != std::string::npos);
     CHECK(hello.find("\"runId\":3") != std::string::npos);
     CHECK(hello.find("\"scenario\":\"hop\"") != std::string::npos);
@@ -414,6 +501,9 @@ TEST_CASE(telemetry_hello_content) {
     CHECK(hello.find("\"guidance_control\":288") != std::string::npos);
     CHECK(hello.find("\"actuator_feedback\":304") != std::string::npos);
     CHECK(hello.find("\"gnss\":320") != std::string::npos);
+    CHECK(hello.find("\"engine_status\":336") != std::string::npos);
+    CHECK(hello.find("\"catch_status\":352") != std::string::npos);
+    CHECK(hello.find("\"catch_config\":353") != std::string::npos);
 }
 
 TEST_CASE(telemetry_ring_orders_and_is_bounded) {

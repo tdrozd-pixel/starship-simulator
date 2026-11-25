@@ -4,6 +4,7 @@
 //   sim_server --host 127.0.0.1         local only
 //   sim_server --port 9000 --time-scale 0.25 --seed 42 --ideal-sensors
 //   sim_server --web-root path/to/web
+//   sim_server --landing pad            land on the pad center instead of the tower catch (default catch)
 //
 // On first run Windows may ask to allow the firewall for Private networks so
 // other devices on the LAN can connect.
@@ -26,6 +27,7 @@
 #include "sim/server/SnapshotRing.hpp"
 #include "sim/server/TelemetryRing.hpp"
 #include "sim/server/TruthServer.hpp"
+#include "sim/vehicle/TowerParams.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -69,7 +71,7 @@ BOOL WINAPI onConsoleEvent(DWORD type) {
 void printUsage() {
     std::puts(
         "usage: sim_server [--port N] [--host ADDR] [--web-root DIR] [--seed N]\n"
-        "                  [--ideal-sensors] [--time-scale X] [--autostart]");
+        "                  [--ideal-sensors] [--landing pad|catch] [--time-scale X] [--autostart]");
 }
 
 }  // namespace
@@ -99,6 +101,15 @@ int main(int argc, char** argv) {
                 runnerConfig.hop.seed = std::stoull(next());
             } else if (arg == "--ideal-sensors") {
                 runnerConfig.hop.idealSensors = true;
+            } else if (arg == "--landing") {
+                const std::string mode = next();
+                if (mode == "pad") {
+                    runnerConfig.hop.landing = fsw::LandingMode::Pad;
+                } else if (mode == "catch") {
+                    runnerConfig.hop.landing = fsw::LandingMode::Catch;
+                } else {
+                    throw std::invalid_argument("--landing must be pad or catch");
+                }
             } else if (arg == "--time-scale") {
                 runnerConfig.timeScale = std::stod(next());
             } else if (arg == "--autostart") {
@@ -146,6 +157,26 @@ int main(int argc, char** argv) {
         hello.vehicleName = vehicle.name;
         hello.vehicleLength = vehicle.length;
         hello.vehicleRadius = vehicle.radius;
+        {
+            const sim::vehicle::TowerParams& tower = runnerConfig.hop.tower;
+            sim::server::TowerInfo& t = hello.tower;
+            t.position[0] = tower.position[0];
+            t.position[1] = tower.position[1];
+            t.approachDir[0] = tower.approachSide[0];
+            t.approachDir[1] = tower.approachSide[1];
+            t.mastHalfWidth = tower.mastHalfWidth;
+            t.mastHeight = tower.mastHeight;
+            t.hingeHalfSpacing = tower.hingeHalfSpacing;
+            t.hingeSetback = tower.hingeSetback;
+            t.armLength = tower.armLength;
+            t.armHalfWidth = tower.armHalfWidth;
+            t.armThickness = tower.armThickness;
+            t.railHeight = tower.railHeight;
+            t.armOpenAngle = tower.armOpenAngle;
+            t.armClosedAngle = tower.psiClosed(vehicle.catchPinOffset) - tower.armOpenAngle;  // inward direction angle
+            t.pinHeight = vehicle.catchPinHeight;
+            t.pinOffset = vehicle.catchPinOffset;
+        }
 
         sim::server::TruthServer server(
             serverConfig, ring, telemetryRing, [&runner] { return runner.runId(); }, [&runner] { runner.requestRestart(); }, hello);
@@ -171,9 +202,10 @@ int main(int argc, char** argv) {
             std::printf("              http://%s:%d/   http://%s:%d/gnc/\n", serverConfig.host.c_str(), port,
                         serverConfig.host.c_str(), port);
         }
-        std::printf("Time scale %.3g, seed %llu, %s sensors. Ctrl-C to stop.\n", runnerConfig.timeScale,
+        std::printf("Time scale %.3g, seed %llu, %s sensors, %s landing. Ctrl-C to stop.\n", runnerConfig.timeScale,
                     static_cast<unsigned long long>(runnerConfig.hop.seed),
-                    runnerConfig.hop.idealSensors ? "ideal" : "modeled");
+                    runnerConfig.hop.idealSensors ? "ideal" : "modeled",
+                    runnerConfig.hop.landing == fsw::LandingMode::Catch ? "catch" : "pad");
         std::fflush(stdout);
 
         while (!gSignalled.load() && !runner.failed()) {

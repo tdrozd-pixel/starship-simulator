@@ -21,6 +21,7 @@ import http.client
 import tempfile
 import time
 import json
+import math
 
 import websocket  # pip install websocket-client
 
@@ -100,11 +101,18 @@ class Server:
 
 
 def decode(data):
-    assert len(data) == 176, f"frame is {len(data)} bytes"
+    assert len(data) == 296, f"frame is {len(data)} bytes"
     assert data[:4] == b"SSTR", data[:4]
     version, mtype, run_id, flags, step = struct.unpack_from("<HHIIQ", data, 4)
     sim_time, = struct.unpack_from("<d", data, 24)
-    return {"version": version, "type": mtype, "run": run_id, "flags": flags, "step": step, "t": sim_time}
+    eng_thr = struct.unpack_from("<6d", data, 176)
+    gim_p = struct.unpack_from("<3d", data, 224)
+    gim_y = struct.unpack_from("<3d", data, 248)
+    running = [(flags >> (3 + i)) & 1 for i in range(6)]
+    arm = struct.unpack_from("<2d", data, 272)
+    tower_state, catch_result = struct.unpack_from("<II", data, 288)
+    return {"arm": arm, "tower_state": tower_state, "catch_result": catch_result, "version": version, "type": mtype, "run": run_id, "flags": flags, "step": step, "t": sim_time,
+            "eng_thr": eng_thr, "gim_p": gim_p, "gim_y": gim_y, "running": running}
 
 
 def recv(ws):
@@ -121,18 +129,37 @@ def test_basic_and_restart(exe):
     try:
         ws = websocket.create_connection(srv.url(), timeout=10)
         kind, hello = recv(ws)
-        check(kind == "text" and hello["type"] == "hello" and hello["protocol"] == 1, "hello received")
+        check(kind == "text" and hello["type"] == "hello" and hello["protocol"] == 3, "hello received")
         check(hello["scenario"] == "hop" and hello["baseRateHz"] == 1000 and hello["snapshotRateHz"] == 100,
               "hello rates")
         check(hello["vehicle"]["name"].startswith("Starship") and hello["vehicle"]["length"] > 0,
               "hello vehicle")
+        tower = hello.get("tower")
+        check(isinstance(tower, dict), "hello has a tower object")
+        for key in ("mastHalfWidth", "mastHeight", "hingeHalfSpacing", "hingeSetback", "armLength", "armHalfWidth",
+                    "armThickness", "railHeight", "armOpenAngle", "armClosedAngle", "pinHeight", "pinOffset"):
+            check(isinstance(tower.get(key), (int, float)) and math.isfinite(tower[key]) and tower[key] > 0,
+                  f"tower.{key} positive finite")
+        for key in ("position", "approachDir"):
+            check(isinstance(tower.get(key), list) and len(tower[key]) == 2
+                  and all(math.isfinite(x) for x in tower[key]), f"tower.{key} is [e, n]")
+        check(abs(math.hypot(*tower["approachDir"]) - 1.0) < 1e-3, "tower.approachDir is a unit vector")
+        check(tower["armOpenAngle"] < math.pi / 2 and tower["armClosedAngle"] < math.pi / 2
+              and tower["railHeight"] < tower["mastHeight"] and tower["pinOffset"] < tower["hingeHalfSpacing"],
+              "tower values sane")
         frames = []
         while len(frames) < 100:
             kind, m = recv(ws)
             if kind == "bin":
                 frames.append(m)
         steps = [f["step"] for f in frames]
-        check(all(f["version"] == 1 and f["type"] == 1 for f in frames), "version/type fields")
+        check(all(f["version"] == 3 and f["type"] == 1 for f in frames), "version/type fields")
+        check(all(all(math.isfinite(a) for a in f["arm"]) and f["tower_state"] <= 4 and f["catch_result"] <= 3
+                  for f in frames), "arm angles finite, tower state and catch result valid")
+        check(all(len(f["eng_thr"]) == 6 and all(math.isfinite(x) for x in f["eng_thr"] + f["gim_p"] + f["gim_y"])
+                  for f in frames), "per-engine fields finite")
+        check(all(not any(f["running"][3:]) for f in frames), "RVacs never run in the hop")
+        check(all(0 <= x <= 1.0001 for f in frames for x in f["eng_thr"]), "engine throttle in range")
         check(all(b - a == 10 for a, b in zip(steps, steps[1:])), "100 frames, step strictly +10")
         check(steps[0] == 0, "run waited for the client: first step is 0")
         run = frames[0]["run"]
@@ -224,7 +251,8 @@ def test_stalled_client_and_shutdown(exe):
 
 
 APIDS = {"fsw_status": 256, "mission_config": 257, "navigation": 272,
-         "guidance_control": 288, "actuator_feedback": 304, "gnss": 320}
+         "guidance_control": 288, "actuator_feedback": 304, "gnss": 320,
+         "engine_status": 336, "catch_status": 352, "catch_config": 353}
 
 
 def decode_ground(data):
@@ -288,12 +316,14 @@ def test_telemetry_stream(exe):
         check(all(f["version"] == 0 and f["sec_hdr"] == 1 and f["len_ok"] for f in frames),
               "valid CCSDS primary headers and length fields")
         seen = {f["apid"] for f in frames}
-        check(set(APIDS.values()) <= seen, f"all six APIDs seen (got {sorted(seen)})")
+        # Catch packets only flow while the flight software emits them; the hello map lists them regardless.
+        core_apids = [v for k, v in APIDS.items() if not k.startswith("catch_")]
+        check(set(core_apids) <= seen, f"all core APIDs seen (got {sorted(seen)})")
         run = frames[0]["run"]
         check(all(f["run"] == run for f in frames) and (not started or started == [run]), "single run id")
         check(all(b["t"] >= a["t"] for a, b in zip(frames, frames[1:])), "ground time nondecreasing")
         gaps = 0
-        for apid in APIDS.values():
+        for apid in core_apids:
             seqs = [f["seq"] for f in frames if f["apid"] == apid]
             ok = all(0 < (b - a) % 16384 < 8192 for a, b in zip(seqs, seqs[1:]))
             check(ok, f"APID {apid}: sequence counts increase")

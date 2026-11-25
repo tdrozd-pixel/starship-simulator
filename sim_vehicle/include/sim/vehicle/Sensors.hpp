@@ -175,4 +175,28 @@ private:
     Channel<GimbalFeedbackMsg>* out_ = nullptr;
 };
 
+// Engine controller feedback: measured throttle (flow) and engine state for all six engines.
+// Values are estimates, not a SpaceX part. State is what the engine controller reports.
+struct EngineFeedbackSpec {
+    double noiseSigma = 0.002;  // [fraction of rated flow] 1 sigma, estimate
+    double quantum = 1.0 / 4096.0;  // [fraction] 12-bit, estimate
+    bool ideal = false;         // true: exact truth
+};
+
+// TODO(phase 6, item 33): failures, latency, per-engine mounting.
+class EngineFeedbackModel final : public Model {
+public:
+    EngineFeedbackModel(std::string name, double rateHz, const HopperDynamics& truth, EngineFeedbackSpec spec,
+                        uint64_t seed);
+
+    void initialize(Bus& bus) override;
+    void update(const StepContext& ctx) override;
+
+private:
+    const HopperDynamics& truth_;
+    EngineFeedbackSpec spec_;
+    Rng rng_;
+    Channel<EngineFeedbackMsg>* out_ = nullptr;
+};
+
 }  // namespace sim::vehicle

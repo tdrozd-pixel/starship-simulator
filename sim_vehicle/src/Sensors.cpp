@@ -176,7 +176,7 @@ GimbalFeedbackModel::GimbalFeedbackModel(std::string name, double rateHz, const 
     : Model(std::move(name), rateHz), truth_(truth), spec_(spec), rng_(seed) {
     bias_.setZero();
     if (!spec_.ideal) {
-        for (int i = 0; i < kEngineCount; ++i) {
+        for (int i = 0; i < kSeaLevelEngineCount; ++i) {
             bias_(0, i) = rng_.normal(0.0, spec_.biasSigma);
             bias_(1, i) = rng_.normal(0.0, spec_.biasSigma);
         }
@@ -188,7 +188,7 @@ void GimbalFeedbackModel::initialize(Bus& bus) { out_ = &bus.channel<GimbalFeedb
 void GimbalFeedbackModel::update(const StepContext& ctx) {
     GimbalFeedbackMsg now;
     const EngineGimbals& actual = truth_.state().gimbal;  // actual positions, never commands
-    for (int i = 0; i < kEngineCount; ++i) {
+    for (int i = 0; i < kSeaLevelEngineCount; ++i) {
         now.valid[i] = true;
         double pitch = actual(0, i);
         double yaw = actual(1, i);
@@ -207,6 +207,26 @@ void GimbalFeedbackModel::update(const StepContext& ctx) {
     out_->publish(havePrevious_ ? previous_ : now, ctx.t);
     previous_ = now;
     havePrevious_ = true;
+}
+
+EngineFeedbackModel::EngineFeedbackModel(std::string name, double rateHz, const HopperDynamics& truth,
+                                         EngineFeedbackSpec spec, uint64_t seed)
+    : Model(std::move(name), rateHz), truth_(truth), spec_(spec), rng_(seed) {}
+
+void EngineFeedbackModel::initialize(Bus& bus) { out_ = &bus.channel<EngineFeedbackMsg>(channels::kEngineFeedback); }
+
+void EngineFeedbackModel::update(const StepContext& ctx) {
+    EngineFeedbackMsg now;
+    for (int i = 0; i < kEngineCount; ++i) {
+        now.valid[i] = true;
+        double throttle = truth_.state().throttle[i];  // actual, never the command
+        if (!spec_.ideal) {
+            throttle = std::max(0.0, quantize(throttle + rng_.normal(0.0, spec_.noiseSigma), spec_.quantum));
+        }
+        now.throttle[i] = throttle;
+        now.state[i] = truth_.engineState(i);
+    }
+    out_->publish(now, ctx.t);
 }
 
 }  // namespace sim::vehicle

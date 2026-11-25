@@ -4,6 +4,7 @@ add_library(sim_vehicle STATIC
     src/Downlink.cpp
     src/FlightSoftwareModel.cpp
     src/TelemetryLogger.cpp
+    src/Tower.cpp
     src/TruthSnapshotPublisher.cpp
     src/HopScenario.cpp)
 

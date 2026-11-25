@@ -13,6 +13,8 @@
 #include "sim/vehicle/HopperParams.hpp"
 #include "sim/vehicle/Sensors.hpp"
 #include "sim/vehicle/TelemetrySink.hpp"
+#include "sim/vehicle/Tower.hpp"
+#include "sim/vehicle/TowerParams.hpp"
 #include "sim/vehicle/TruthSnapshot.hpp"
 #include "sim/vehicle/TruthSnapshotPublisher.hpp"
 
@@ -30,10 +32,13 @@ struct HopScenarioOptions {
     double imuRateHz = 500.0;
     double altimeterRateHz = 50.0;
     double gimbalFeedbackRateHz = 100.0;
+    double engineFeedbackRateHz = 100.0;
     double downlinkRateHz = 100.0;
     double gnssModelRateHz = 100.0;  // times the GNSS latency; solutions come at gnss.outputRateHz
     HopperParams vehicle;
     LaunchSite site;
+    TowerParams tower;          // catch tower (exists in Pad mode too, where it is never reached)
+    fsw::LandingMode landing = fsw::LandingMode::Catch;  // overrides hop.landingMode
     fsw::HopConfig hop;         // vehicle-knowledge fields are filled from `vehicle`
     TruthSnapshotSink* snapshotSink = nullptr;  // non-owning; null: no publisher
     double snapshotRateHz = 100.0;
@@ -41,6 +46,7 @@ struct HopScenarioOptions {
     AltimeterSpec altimeter;
     GnssSpec gnss;
     GimbalFeedbackSpec gimbalFeedback;
+    EngineFeedbackSpec engineFeedback;
     TelemetrySink* telemetrySink = nullptr;  // non-owning; null: no downlink
     DownlinkSpec downlink;
     env::WeatherParameters weather;
@@ -55,6 +61,7 @@ struct HopScenario {
     HopperDynamics* vehicle = nullptr;
     FlightSoftwareModel* fsw = nullptr;
     env::WeatherModel* weather = nullptr;
+    TowerModel* tower = nullptr;
     DownlinkModel* downlink = nullptr;  // null when no telemetry sink was given
     TruthSnapshotPublisher* snapshotPublisher = nullptr;  // null when no sink was given
 };

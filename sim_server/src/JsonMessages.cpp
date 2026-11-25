@@ -100,7 +100,7 @@ bool skipValue(std::string_view text, std::size_t& i) {
 }  // namespace
 
 std::string makeHello(const HelloInfo& info) {
-    std::string out = "{\"type\":\"hello\",\"protocol\":1,\"scenario\":\"hop\",\"runId\":";
+    std::string out = "{\"type\":\"hello\",\"protocol\":3,\"scenario\":\"hop\",\"runId\":";
     out += std::to_string(info.runId);
     out += ",\"baseRateHz\":1000,\"snapshotRateHz\":100,\"timeScale\":";
     out += number(info.timeScale);
@@ -110,6 +110,28 @@ std::string makeHello(const HelloInfo& info) {
     out += number(info.vehicleLength);
     out += ",\"radius\":";
     out += number(info.vehicleRadius);
+    out += "},\"tower\":{";
+    const TowerInfo& t = info.tower;
+    out += "\"position\":[" + number(t.position[0]) + "," + number(t.position[1]) + "]";
+    out += ",\"approachDir\":[" + number(t.approachDir[0]) + "," + number(t.approachDir[1]) + "]";
+    const auto field = [&out](const char* key, double v) {
+        out += ",\"";
+        out += key;
+        out += "\":";
+        out += number(v);
+    };
+    field("mastHalfWidth", t.mastHalfWidth);
+    field("mastHeight", t.mastHeight);
+    field("hingeHalfSpacing", t.hingeHalfSpacing);
+    field("hingeSetback", t.hingeSetback);
+    field("armLength", t.armLength);
+    field("armHalfWidth", t.armHalfWidth);
+    field("armThickness", t.armThickness);
+    field("railHeight", t.railHeight);
+    field("armOpenAngle", t.armOpenAngle);
+    field("armClosedAngle", t.armClosedAngle);
+    field("pinHeight", t.pinHeight);
+    field("pinOffset", t.pinOffset);
     out += "}}";
     return out;
 }
@@ -124,7 +146,8 @@ std::string makeTelemetryHello(uint32_t runId, double timeScale) {
     out += ",\"timeScale\":";
     out += number(timeScale);
     out += ",\"apids\":{\"fsw_status\":256,\"mission_config\":257,\"navigation\":272,"
-           "\"guidance_control\":288,\"actuator_feedback\":304,\"gnss\":320}}";
+           "\"guidance_control\":288,\"actuator_feedback\":304,\"gnss\":320,"
+           "\"engine_status\":336,\"catch_status\":352,\"catch_config\":353}}";
     return out;
 }
 

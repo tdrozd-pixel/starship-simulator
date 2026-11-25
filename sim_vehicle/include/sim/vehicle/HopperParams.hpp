@@ -11,8 +11,12 @@ constexpr double kDegToRad = std::numbers::pi / 180.0;
 constexpr double kTonneForce = 1000.0 * 9.80665;  // [N] per metric tonne-force
 constexpr double kSeaLevelPressure = 101325.0;     // [Pa] US76, defines the rated sea-level thrust
 
-// Number of sea-level Raptors on the Ship. Only these fly the hop (see below).
-constexpr int kEngineCount = 3;
+// Engines on the Ship: index 0..2 are the sea-level Raptors (inner ring, gimbaled, the only
+// ones that fly the hop), index 3..5 are the Raptor Vacuums (outer ring, fixed, no gimbal).
+constexpr int kSeaLevelEngineCount = 3;
+constexpr int kRvacCount = 3;
+constexpr int kEngineCount = kSeaLevelEngineCount + kRvacCount;
+constexpr int kFirstRvac = kSeaLevelEngineCount;
 
 // Starship V3 Ship in a hop configuration (in the spirit of the SN5/SN6 150 m hops),
 // flying on its three sea-level Raptor 3 engines with a partial propellant load.
@@ -29,8 +33,11 @@ constexpr int kEngineCount = 3;
 //        and https://newspaceeconomy.ca/2026/04/16/detailed-review-of-starship-v3/
 //        (Ship about 52 m, 1600 t propellant capacity).
 //
-// Not modeled yet: the three Raptor Vacuum engines (their mass is in dryMass; they
-// cannot run at sea level without flow separation), flaps, RCS, legs.
+// The three Raptor Vacuum engines (RVac) are modeled with ESTIMATED numbers (SpaceX does not
+// publish them). Their mass is in dryMass (not added again). The hop never lights them: a
+// vacuum nozzle at sea level suffers flow separation, modeled as a start inhibit above an
+// ambient pressure threshold.
+// Not modeled yet: flaps, RCS, legs.
 struct HopperParams {
     const char* name = "Starship V3 Ship, hop configuration";
 
@@ -64,7 +71,23 @@ struct HopperParams {
     double engineAzimuth0 = 90.0 * kDegToRad;  // [rad] estimate, from body +x toward +y
     double gimbalHeight = 3.5;          // [m] above base, estimate (gimbal pivot at the engine top)
 
-    // Thrust vector control, per engine.
+    // Raptor Vacuum (RVac), per engine, outer ring, fixed (no gimbal). All values are estimates.
+    double rvacVacuumThrust = 250.0 * kTonneForce;  // [N] estimate: ~250 tf vacuum thrust at full flow
+    double rvacVacuumIsp = 380.0;                   // [s] estimate (public figures ~380 s)
+    double rvacNozzleExitDiameter = 2.4;            // [m] estimate (public photos)
+    double rvacMinThrottle = 0.40;                  // fraction of rated flow, estimate (as the SL engine)
+    double rvacIgnitionDelay = 1.0;                 // [s] estimate: same structure as the SL engine
+    double rvacThrottleTimeConstant = 0.15;         // [s] estimate
+    double rvacThrottleRateLimit = 1.0;             // [1/s] estimate
+    // Flow separation / start inhibit: the engine refuses to run (and shuts down) while the
+    // ambient pressure is above this. Estimate from the Summerfield criterion: separation when
+    // nozzle exit pressure < ~0.4 * ambient; an exit pressure of ~5 kPa gives ~12 kPa (~15 km).
+    double rvacMaxAmbientPressure = 12000.0;        // [Pa] estimate
+    double rvacClusterRadius = 3.6;                 // [m] estimate, outer ring, centerline to engine axis
+    // Offset 60 deg from the sea-level engines so the six form a hexagonal-like pattern.
+    double rvacAzimuth0 = 150.0 * kDegToRad;        // [rad] estimate, from body +x toward +y
+
+    // Thrust vector control, per sea-level engine.
     double gimbalLimit = 15.0 * kDegToRad;      // [rad] estimate (not public)
     double gimbalRateLimit = 20.0 * kDegToRad;  // [rad/s] estimate
     double gimbalTimeConstant = 0.05;           // [s] estimate
@@ -78,8 +101,21 @@ struct HopperParams {
     double gnssAntennaPosition[3] = {0.0, 4.5, 46.0};  // [m] estimate: on the skin near the nose
     // The IMU is modeled at the CG for now. TODO(phase 6, item 30): IMU mounting point.
 
+    // Catch pins (placeholder for the tower catch hardware). The real Ship has no catch pins
+    // (the Booster catches on grid fin pins); two pins on the Ship are a HYPOTHETICAL ESTIMATE
+    // so the tower arms have something to engage. Pin 0 sits on body +y, pin 1 on body -y.
+    double catchPinHeight = 30.0;   // [m] above the base, estimate (hypothetical, near the CG-to-nose region)
+    // Stub length: the pins stand 2.5 m clear of the 4.5 m skin so the closed arms (inner edge at the arm tips
+    // about 5.7 m from the axis, see TowerParams) clear the hull by more than 1 m while the Ship descends
+    // between them. A smaller offset made the closed arm tips intersect the hull (about 1.5 m at 5.0 m).
+    double catchPinOffset = 7.0;    // [m] lateral from the vehicle axis, estimate (hypothetical stub length)
+    double catchPinRadius = 0.25;   // [m] estimate (hypothetical pin radius)
+
     // Derived.
     double nozzleExitArea() const { return std::numbers::pi * 0.25 * nozzleExitDiameter * nozzleExitDiameter; }
+    double rvacNozzleExitArea() const {
+        return std::numbers::pi * 0.25 * rvacNozzleExitDiameter * rvacNozzleExitDiameter;
+    }
     // Thrust at full rated flow in vacuum: F_vac = F_sl + p_sl * A_exit.
     double vacuumThrust() const { return seaLevelThrust + kSeaLevelPressure * nozzleExitArea(); }
     double cgHeight() const {

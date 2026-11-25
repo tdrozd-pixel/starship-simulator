@@ -1,11 +1,15 @@
 add_executable(sim_tests
     TestMain.cpp
+    test_catch_fsw.cpp
+    test_catch_scenario.cpp
     test_core.cpp
     test_environment.cpp
     test_flight_software.cpp
     test_hop_scenario.cpp
     test_navigation.cpp
+    test_propulsion.cpp
     test_telemetry.cpp
+    test_tower.cpp
     test_truth_snapshot.cpp)
 
 target_include_directories(sim_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

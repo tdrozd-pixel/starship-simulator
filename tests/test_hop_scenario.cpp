@@ -82,6 +82,7 @@ TEST_CASE(hop_weather_changes_air_relative_drag) {
 
 TEST_CASE(hop_tvc_recovers_from_initial_tilt) {
     sim::vehicle::HopScenarioOptions options;
+    options.landing = fsw::LandingMode::Pad;  // the catch flight translates (and tilts) from 60 m; this tests the TVC alone
     options.idealSensors = true;
     options.initialAttitude =
         Eigen::Quaterniond(Eigen::AngleAxisd(6.0 * std::numbers::pi / 180.0, Eigen::Vector3d::UnitX())) *

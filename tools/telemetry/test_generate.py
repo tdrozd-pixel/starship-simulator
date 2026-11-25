@@ -11,8 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate  # noqa: E402
 
 EXPECTED_LENGTHS = {
-    "fsw_status": 20, "mission_config": 36, "navigation": 80,
+    "fsw_status": 20, "mission_config": 36, "navigation": 116,
     "guidance_control": 84, "actuator_feedback": 36, "gnss": 56,
+    "engine_status": 72, "catch_status": 40, "catch_config": 80,
 }
 
 

@@ -35,6 +35,141 @@ export const ENUMS = {
       "value": 6,
       "name": "Landed",
       "label": "LANDED"
+    },
+    {
+      "value": 7,
+      "name": "CatchApproach",
+      "label": "CATCH APPROACH"
+    },
+    {
+      "value": 8,
+      "name": "CatchHold",
+      "label": "CATCH HOLD"
+    },
+    {
+      "value": 9,
+      "name": "CatchFinal",
+      "label": "CATCH FINAL"
+    },
+    {
+      "value": 10,
+      "name": "Caught",
+      "label": "CAUGHT"
+    }
+  ],
+  "landingMode": [
+    {
+      "value": 0,
+      "name": "Pad",
+      "label": "PAD"
+    },
+    {
+      "value": 1,
+      "name": "Catch",
+      "label": "CATCH"
+    }
+  ],
+  "catchPhase": [
+    {
+      "value": 0,
+      "name": "Inactive",
+      "label": "INACTIVE"
+    },
+    {
+      "value": 1,
+      "name": "Staging",
+      "label": "STAGING"
+    },
+    {
+      "value": 2,
+      "name": "Approach",
+      "label": "APPROACH"
+    },
+    {
+      "value": 3,
+      "name": "Hold",
+      "label": "HOLD"
+    },
+    {
+      "value": 4,
+      "name": "Final",
+      "label": "FINAL"
+    },
+    {
+      "value": 5,
+      "name": "Caught",
+      "label": "CAUGHT"
+    },
+    {
+      "value": 6,
+      "name": "Abort",
+      "label": "ABORT"
+    }
+  ],
+  "catchAbort": [
+    {
+      "value": 0,
+      "name": "None",
+      "label": "NONE"
+    },
+    {
+      "value": 1,
+      "name": "RtkLost",
+      "label": "RTK LOST"
+    },
+    {
+      "value": 2,
+      "name": "Corridor",
+      "label": "CORRIDOR"
+    },
+    {
+      "value": 3,
+      "name": "Window",
+      "label": "WINDOW"
+    },
+    {
+      "value": 4,
+      "name": "Timeout",
+      "label": "TIMEOUT"
+    }
+  ],
+  "armsExpected": [
+    {
+      "value": 0,
+      "name": "Open",
+      "label": "OPEN"
+    },
+    {
+      "value": 1,
+      "name": "Closing",
+      "label": "CLOSING"
+    },
+    {
+      "value": 2,
+      "name": "Closed",
+      "label": "CLOSED"
+    }
+  ],
+  "engineState": [
+    {
+      "value": 0,
+      "name": "Off",
+      "label": "OFF"
+    },
+    {
+      "value": 1,
+      "name": "Starting",
+      "label": "STARTING"
+    },
+    {
+      "value": 2,
+      "name": "Running",
+      "label": "RUNNING"
+    },
+    {
+      "value": 3,
+      "name": "Inhibited",
+      "label": "INHIBITED"
     }
   ],
   "gnssFixType": [
@@ -62,6 +197,10 @@ export const CONSTANTS = {
   "engineAzimuthFirstDeg": 90,
   "engineAzimuthStepDeg": 120,
   "engineRadius": 1.55,
+  "rvacCount": 3,
+  "rvacAzimuthFirstDeg": 150,
+  "rvacAzimuthStepDeg": 120,
+  "rvacRadius": 3.6,
   "gimbalLimitDeg": 15
 };
 
@@ -110,6 +249,61 @@ export const RECORDS = {
         "size": 4,
         "unit": "rad",
         "description": "gimbal yaw command (about body y)"
+      }
+    ]
+  },
+  "engine_power": {
+    "name": "engine_power",
+    "title": "Engine power record",
+    "size": 12,
+    "description": "Per-engine power setting and measured state in the engine status packet (all six engines: sea-level 0 to 2, RVac 3 to 5).",
+    "fields": [
+      {
+        "name": "on",
+        "type": "u8",
+        "offset": 0,
+        "size": 1,
+        "description": "engine commanded on",
+        "boolean": true
+      },
+      {
+        "name": "state",
+        "type": "u8",
+        "offset": 1,
+        "size": 1,
+        "description": "engine controller state as reported by the engine (inhibited: commanded on but refused, e.g. RVac flow separation at high ambient pressure)",
+        "enum": "engineState"
+      },
+      {
+        "name": "valid",
+        "type": "u8",
+        "offset": 2,
+        "size": 1,
+        "description": "engine feedback reading is valid",
+        "boolean": true
+      },
+      {
+        "name": "pad",
+        "type": "pad",
+        "count": 1,
+        "offset": 3,
+        "size": 1
+      },
+      {
+        "name": "command",
+        "type": "f32",
+        "offset": 4,
+        "size": 4,
+        "unit": "fraction",
+        "description": "power setting command, fraction of rated flow (0 when commanded off)"
+      },
+      {
+        "name": "throttle",
+        "type": "f32",
+        "offset": 8,
+        "size": 4,
+        "unit": "fraction",
+        "description": "actual throttle, measured by the engine feedback sensor (not the command)"
       }
     ]
   },
@@ -308,7 +502,7 @@ export const PACKETS = {
     "name": "navigation",
     "title": "Navigation",
     "apid": 272,
-    "userDataLength": 80,
+    "userDataLength": 116,
     "description": "Estimates are the flight software's; \"measured\" values are the latest raw sensor readings.",
     "rate": {
       "kind": "cycles",
@@ -427,6 +621,78 @@ export const PACKETS = {
         "size": 4,
         "unit": "m/s^2",
         "description": "estimated apparent acceleration bias"
+      },
+      {
+        "name": "positionSigmaEast",
+        "type": "f32",
+        "offset": 80,
+        "size": 4,
+        "unit": "m",
+        "description": "1-sigma east position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts"
+      },
+      {
+        "name": "positionSigmaNorth",
+        "type": "f32",
+        "offset": 84,
+        "size": 4,
+        "unit": "m",
+        "description": "1-sigma north position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts"
+      },
+      {
+        "name": "velocitySigmaEast",
+        "type": "f32",
+        "offset": 88,
+        "size": 4,
+        "unit": "m/s",
+        "description": "1-sigma east velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts"
+      },
+      {
+        "name": "velocitySigmaNorth",
+        "type": "f32",
+        "offset": 92,
+        "size": 4,
+        "unit": "m/s",
+        "description": "1-sigma north velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts"
+      },
+      {
+        "name": "gnssInnovationEast",
+        "type": "f32",
+        "offset": 96,
+        "size": 4,
+        "unit": "m",
+        "description": "latest GNSS east position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now)"
+      },
+      {
+        "name": "gnssInnovationNorth",
+        "type": "f32",
+        "offset": 100,
+        "size": 4,
+        "unit": "m",
+        "description": "latest GNSS north position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now)"
+      },
+      {
+        "name": "altimeterInnovation",
+        "type": "f32",
+        "offset": 104,
+        "size": 4,
+        "unit": "m",
+        "description": "latest altimeter residual: tilt-compensated measured altitude minus estimated altitude before the correction. The vertical estimator is a fixed-gain complementary filter, so there is no vertical sigma"
+      },
+      {
+        "name": "gnssUpdateAge",
+        "type": "f32",
+        "offset": 108,
+        "size": 4,
+        "unit": "s",
+        "description": "time since the last accepted GNSS fix; -1 if none accepted yet. No measurement gating exists, so there is no rejected count"
+      },
+      {
+        "name": "altimeterUpdateAge",
+        "type": "f32",
+        "offset": 112,
+        "size": 4,
+        "unit": "s",
+        "description": "time since the last accepted altimeter reading; -1 if none accepted yet. No measurement gating exists, so there is no rejected count"
       }
     ]
   },
@@ -529,6 +795,27 @@ export const PACKETS = {
       }
     ]
   },
+  "engine_status": {
+    "name": "engine_status",
+    "title": "Engine status",
+    "apid": 336,
+    "userDataLength": 72,
+    "description": "Power setting command, measured throttle and state of all six engines (three sea-level Raptors, then three Raptor Vacuums). A separate packet so the guidance and actuator feedback layouts (sea-level engines only) are unchanged.",
+    "rate": {
+      "kind": "cycles",
+      "period": 5
+    },
+    "fields": [
+      {
+        "name": "engines",
+        "type": "record:engine_power",
+        "count": 6,
+        "offset": 0,
+        "size": 72,
+        "description": "per engine; index 0 to 2 sea-level, 3 to 5 RVac"
+      }
+    ]
+  },
   "gnss": {
     "name": "gnss",
     "title": "GNSS",
@@ -627,6 +914,302 @@ export const PACKETS = {
         "description": "receiver-reported 1 sigma"
       }
     ]
+  },
+  "catch_status": {
+    "name": "catch_status",
+    "title": "Catch status",
+    "apid": 352,
+    "userDataLength": 40,
+    "description": "Catch state computed by the flight software (phase, abort reason, go/no-go flags and the errors against the seat). The Ship translates to a point over the seat early and descends vertically between the open arms, so the phases Approach, Hold and Final are height bands of one vertical descent (Hold = the arms are expected to be closing). The arm state is NOT downlinked to the flight computer: armsExpected is what the sequence expects (time since the arms-closing height), not a measurement. Along and lateral are the horizontal offset from the seat point in the tower approach frame: alongRemaining positive = short of the seat point, lateral positive toward the +b side (b = approach direction rotated +90 deg). The go/no-go flags are the flight software gates (about 2x the physical catch window, tapering with height above the seat), not the window itself. The u8 block is 4 bytes so every f32 is 4-byte aligned.",
+    "rate": {
+      "kind": "cycles",
+      "period": 10
+    },
+    "fields": [
+      {
+        "name": "phase",
+        "type": "u8",
+        "offset": 0,
+        "size": 1,
+        "description": "catch phase",
+        "enum": "catchPhase"
+      },
+      {
+        "name": "abortReason",
+        "type": "u8",
+        "offset": 1,
+        "size": 1,
+        "description": "reason for the last abort; 0 if none",
+        "enum": "catchAbort"
+      },
+      {
+        "name": "armsExpected",
+        "type": "u8",
+        "offset": 2,
+        "size": 1,
+        "description": "arm state expected per the sequence (time since the arms-closing height), not measured",
+        "enum": "armsExpected"
+      },
+      {
+        "name": "flags",
+        "type": "u8",
+        "offset": 3,
+        "size": 1,
+        "description": "go/no-go flags",
+        "bits": [
+          {
+            "name": "go",
+            "description": "all conditions go"
+          },
+          {
+            "name": "positionOk",
+            "description": "horizontal error to the seat within the funnel for this height"
+          },
+          {
+            "name": "speedOk",
+            "description": "horizontal speed and sink rate within their gates for this height"
+          },
+          {
+            "name": "tiltOk",
+            "description": "tilt and heading within their gates for this height"
+          },
+          {
+            "name": "rtkOk",
+            "description": "RTK fixed solution available"
+          },
+          {
+            "name": "corridorOk",
+            "description": "lateral error inside the funnel for this height"
+          },
+          {
+            "name": "aborted",
+            "description": "catch aborted, flying the pad fallback"
+          }
+        ]
+      },
+      {
+        "name": "alongRemaining",
+        "type": "f32",
+        "offset": 4,
+        "size": 4,
+        "unit": "m",
+        "description": "horizontal offset along the approach axis from the seat point; positive = short of the seat (the Ship descends over the seat, so this is near zero in a good run)"
+      },
+      {
+        "name": "lateralError",
+        "type": "f32",
+        "offset": 8,
+        "size": 4,
+        "unit": "m",
+        "description": "lateral offset from the seat point; positive = +b side"
+      },
+      {
+        "name": "pinHeightAboveSeat",
+        "type": "f32",
+        "offset": 12,
+        "size": 4,
+        "unit": "m",
+        "description": "catch pin height above the seated pin height"
+      },
+      {
+        "name": "alongSpeed",
+        "type": "f32",
+        "offset": 16,
+        "size": 4,
+        "unit": "m/s",
+        "description": "estimated horizontal velocity along the approach axis"
+      },
+      {
+        "name": "lateralSpeed",
+        "type": "f32",
+        "offset": 20,
+        "size": 4,
+        "unit": "m/s",
+        "description": "estimated lateral velocity"
+      },
+      {
+        "name": "sinkRate",
+        "type": "f32",
+        "offset": 24,
+        "size": 4,
+        "unit": "m/s",
+        "description": "estimated sink rate, positive down"
+      },
+      {
+        "name": "tilt",
+        "type": "f32",
+        "offset": 28,
+        "size": 4,
+        "unit": "rad",
+        "description": "estimated tilt from vertical"
+      },
+      {
+        "name": "lateralLimit",
+        "type": "f32",
+        "offset": 32,
+        "size": 4,
+        "unit": "m",
+        "description": "funnel: horizontal error allowed at the current height above the seat (about 1.2 m at the seat, widening with height)"
+      },
+      {
+        "name": "timeToSeat",
+        "type": "f32",
+        "offset": 36,
+        "size": 4,
+        "unit": "s",
+        "description": "estimated time to the seat from the vertical motion (constant deceleration from the sink rate to the contact sink rate); -1 if not descending"
+      }
+    ]
+  },
+  "catch_config": {
+    "name": "catch_config",
+    "title": "Catch config",
+    "apid": 353,
+    "userDataLength": 80,
+    "description": "Catch geometry and window limits the flight software is configured with (mission data). Target-frame local ENU, metres and radians. The u8 is followed by 3 pad bytes so every f32 is 4-byte aligned.",
+    "rate": {
+      "kind": "cycles",
+      "period": 100
+    },
+    "fields": [
+      {
+        "name": "landingMode",
+        "type": "u8",
+        "offset": 0,
+        "size": 1,
+        "description": "landing mode (`fsw::LandingMode`)",
+        "enum": "landingMode"
+      },
+      {
+        "name": "pad",
+        "type": "pad",
+        "count": 3,
+        "offset": 1,
+        "size": 3
+      },
+      {
+        "name": "seatPoint",
+        "type": "f32",
+        "count": 3,
+        "offset": 4,
+        "size": 12,
+        "unit": "m",
+        "description": "east, north, seated base altitude; target frame"
+      },
+      {
+        "name": "approachDir",
+        "type": "f32",
+        "count": 2,
+        "offset": 16,
+        "size": 8,
+        "description": "unit vector east, north, toward the tower from the approach side (defines along and lateral)"
+      },
+      {
+        "name": "stagingDistance",
+        "type": "f32",
+        "offset": 24,
+        "size": 4,
+        "unit": "m",
+        "description": "distance of the translation target before the seat point along the approach axis; 0 = the Ship translates to a point straight over the seat and descends vertically"
+      },
+      {
+        "name": "towerPosition",
+        "type": "f32",
+        "count": 2,
+        "offset": 28,
+        "size": 8,
+        "unit": "m",
+        "description": "tower centerline east, north"
+      },
+      {
+        "name": "mastHalfWidth",
+        "type": "f32",
+        "offset": 36,
+        "size": 4,
+        "unit": "m",
+        "description": "tower mast half width (square)"
+      },
+      {
+        "name": "mastHeight",
+        "type": "f32",
+        "offset": 40,
+        "size": 4,
+        "unit": "m",
+        "description": "tower mast height"
+      },
+      {
+        "name": "hingeHalfSpacing",
+        "type": "f32",
+        "offset": 44,
+        "size": 4,
+        "unit": "m",
+        "description": "arm hinge lateral offset from the approach axis"
+      },
+      {
+        "name": "hingeSetback",
+        "type": "f32",
+        "offset": 48,
+        "size": 4,
+        "unit": "m",
+        "description": "arm hinge distance from the tower center along the approach axis"
+      },
+      {
+        "name": "armLength",
+        "type": "f32",
+        "offset": 52,
+        "size": 4,
+        "unit": "m",
+        "description": "arm length from the hinge"
+      },
+      {
+        "name": "armOpenAngle",
+        "type": "f32",
+        "offset": 56,
+        "size": 4,
+        "unit": "rad",
+        "description": "open arm direction, outward from the approach axis"
+      },
+      {
+        "name": "armClosedAngle",
+        "type": "f32",
+        "offset": 60,
+        "size": 4,
+        "unit": "rad",
+        "description": "closed arm direction, inward from the approach axis"
+      },
+      {
+        "name": "windowLateral",
+        "type": "f32",
+        "offset": 64,
+        "size": 4,
+        "unit": "m",
+        "description": "catch window lateral limit"
+      },
+      {
+        "name": "windowAlong",
+        "type": "f32",
+        "offset": 68,
+        "size": 4,
+        "unit": "m",
+        "description": "catch window along limit"
+      },
+      {
+        "name": "windowSink",
+        "type": "f32",
+        "offset": 72,
+        "size": 4,
+        "unit": "m/s",
+        "description": "catch window sink rate limit"
+      },
+      {
+        "name": "windowTilt",
+        "type": "f32",
+        "offset": 76,
+        "size": 4,
+        "unit": "rad",
+        "description": "catch window tilt limit"
+      }
+    ]
   }
 };
 
@@ -637,6 +1220,17 @@ function decodeGncEngine(dv, o) {
     throttle: dv.getFloat32(o + 4, false),
     pitch: dv.getFloat32(o + 8, false),
     yaw: dv.getFloat32(o + 12, false),
+  };
+}
+
+// Record engine_power (12 bytes) at byte offset `o` of the user data.
+function decodeEnginePower(dv, o) {
+  return {
+    on: dv.getUint8(o) !== 0,
+    state: dv.getUint8(o + 1),
+    valid: dv.getUint8(o + 2) !== 0,
+    command: dv.getFloat32(o + 4, false),
+    throttle: dv.getFloat32(o + 8, false),
   };
 }
 
@@ -680,7 +1274,7 @@ export function decodeMissionConfig(dv) {
   };
 }
 
-// 0x110 Navigation (80 bytes).
+// 0x110 Navigation (116 bytes).
 export function decodeNavigation(dv) {
   return {
     attitude: [dv.getFloat32(0, false), dv.getFloat32(4, false), dv.getFloat32(8, false), dv.getFloat32(12, false)],
@@ -696,6 +1290,15 @@ export function decodeNavigation(dv) {
     velocityNorth: dv.getFloat32(68, false),
     accelBiasEast: dv.getFloat32(72, false),
     accelBiasNorth: dv.getFloat32(76, false),
+    positionSigmaEast: dv.getFloat32(80, false),
+    positionSigmaNorth: dv.getFloat32(84, false),
+    velocitySigmaEast: dv.getFloat32(88, false),
+    velocitySigmaNorth: dv.getFloat32(92, false),
+    gnssInnovationEast: dv.getFloat32(96, false),
+    gnssInnovationNorth: dv.getFloat32(100, false),
+    altimeterInnovation: dv.getFloat32(104, false),
+    gnssUpdateAge: dv.getFloat32(108, false),
+    altimeterUpdateAge: dv.getFloat32(112, false),
   };
 }
 
@@ -720,6 +1323,13 @@ export function decodeActuatorFeedback(dv) {
   };
 }
 
+// 0x150 Engine status (72 bytes).
+export function decodeEngineStatus(dv) {
+  return {
+    engines: [decodeEnginePower(dv, 0), decodeEnginePower(dv, 12), decodeEnginePower(dv, 24), decodeEnginePower(dv, 36), decodeEnginePower(dv, 48), decodeEnginePower(dv, 60)],
+  };
+}
+
 // 0x140 GNSS (56 bytes).
 export function decodeGnss(dv) {
   return {
@@ -736,6 +1346,55 @@ export function decodeGnss(dv) {
   };
 }
 
+// 0x160 Catch status (40 bytes).
+export function decodeCatchStatus(dv) {
+  const flags = dv.getUint8(3);
+  return {
+    phase: dv.getUint8(0),
+    abortReason: dv.getUint8(1),
+    armsExpected: dv.getUint8(2),
+    flags,
+    go: (flags & 1) !== 0,
+    positionOk: (flags & 2) !== 0,
+    speedOk: (flags & 4) !== 0,
+    tiltOk: (flags & 8) !== 0,
+    rtkOk: (flags & 16) !== 0,
+    corridorOk: (flags & 32) !== 0,
+    aborted: (flags & 64) !== 0,
+    alongRemaining: dv.getFloat32(4, false),
+    lateralError: dv.getFloat32(8, false),
+    pinHeightAboveSeat: dv.getFloat32(12, false),
+    alongSpeed: dv.getFloat32(16, false),
+    lateralSpeed: dv.getFloat32(20, false),
+    sinkRate: dv.getFloat32(24, false),
+    tilt: dv.getFloat32(28, false),
+    lateralLimit: dv.getFloat32(32, false),
+    timeToSeat: dv.getFloat32(36, false),
+  };
+}
+
+// 0x161 Catch config (80 bytes).
+export function decodeCatchConfig(dv) {
+  return {
+    landingMode: dv.getUint8(0),
+    seatPoint: [dv.getFloat32(4, false), dv.getFloat32(8, false), dv.getFloat32(12, false)],
+    approachDir: [dv.getFloat32(16, false), dv.getFloat32(20, false)],
+    stagingDistance: dv.getFloat32(24, false),
+    towerPosition: [dv.getFloat32(28, false), dv.getFloat32(32, false)],
+    mastHalfWidth: dv.getFloat32(36, false),
+    mastHeight: dv.getFloat32(40, false),
+    hingeHalfSpacing: dv.getFloat32(44, false),
+    hingeSetback: dv.getFloat32(48, false),
+    armLength: dv.getFloat32(52, false),
+    armOpenAngle: dv.getFloat32(56, false),
+    armClosedAngle: dv.getFloat32(60, false),
+    windowLateral: dv.getFloat32(64, false),
+    windowAlong: dv.getFloat32(68, false),
+    windowSink: dv.getFloat32(72, false),
+    windowTilt: dv.getFloat32(76, false),
+  };
+}
+
 // Decoders and user data lengths by APID.
 export const DECODERS = {
   0x100: decodeFswStatus,
@@ -743,13 +1402,19 @@ export const DECODERS = {
   0x110: decodeNavigation,
   0x120: decodeGuidanceControl,
   0x130: decodeActuatorFeedback,
+  0x150: decodeEngineStatus,
   0x140: decodeGnss,
+  0x160: decodeCatchStatus,
+  0x161: decodeCatchConfig,
 };
 export const USER_LENGTH = {
   0x100: 20,
   0x101: 36,
-  0x110: 80,
+  0x110: 116,
   0x120: 84,
   0x130: 36,
+  0x150: 72,
   0x140: 56,
+  0x160: 40,
+  0x161: 80,
 };

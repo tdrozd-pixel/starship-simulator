@@ -43,10 +43,13 @@ Total packet length = 12 + user data length. Every packet is at most 256 bytes.
 |---|---|---|---|
 | 0x100 (256) | FSW status | 10 Hz | 20 |
 | 0x101 (257) | Mission config | 1 Hz | 36 |
-| 0x110 (272) | Navigation | 50 Hz | 80 |
+| 0x110 (272) | Navigation | 50 Hz | 116 |
 | 0x120 (288) | Guidance and control | 50 Hz | 84 |
 | 0x130 (304) | Actuator feedback | 50 Hz | 36 |
+| 0x150 (336) | Engine status | 20 Hz | 72 |
 | 0x140 (320) | GNSS | each new fix (10 Hz) | 56 |
+| 0x160 (352) | Catch status | 10 Hz | 40 |
+| 0x161 (353) | Catch config | 1 Hz | 80 |
 
 Rates are of flight computer cycles at 100 Hz: 50 Hz packets go on even cycles, 10 Hz on every 10th cycle, 1 Hz on every 100th, starting with cycle 0. The GNSS packet goes on the first cycle that sees a new receiver solution.
 
@@ -56,7 +59,7 @@ Flight software mode, health flags and counters.
 
 | Offset | Type | Field | Notes |
 |---:|---|---|---|
-| 0 | u8 | mode | flight software mode (`fsw::HopMode`): 0 Prelaunch, 1 Ignition, 2 Ascent, 4 Descent, 5 FinalDescent, 6 Landed |
+| 0 | u8 | mode | flight software mode (`fsw::HopMode`): 0 Prelaunch, 1 Ignition, 2 Ascent, 4 Descent, 5 FinalDescent, 6 Landed, 7 CatchApproach, 8 CatchHold, 9 CatchFinal, 10 Caught |
 | 1 | u8 | flags | status flags: bit 0 engines on (`enginesOn`), bit 1 horizontal nav valid (`navValid`), bit 2 translating to target (`translating`), bit 3 aligned over target (`aligned`), bit 4 GNSS ready (fix count >= required) (`gnssReady`) |
 | 2 | u16 | gnssFixCount | GNSS fixes received; saturates at 65535 |
 | 4 | u32 | cycleCount | flight computer cycles since start |
@@ -97,6 +100,15 @@ Estimates are the flight software's; "measured" values are the latest raw sensor
 | 68 | f32 | velocityNorth | [m/s] estimated |
 | 72 | f32 | accelBiasEast | [m/s^2] estimated apparent acceleration bias |
 | 76 | f32 | accelBiasNorth | [m/s^2] estimated apparent acceleration bias |
+| 80 | f32 | positionSigmaEast | [m] 1-sigma east position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts |
+| 84 | f32 | positionSigmaNorth | [m] 1-sigma north position uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts |
+| 88 | f32 | velocitySigmaEast | [m/s] 1-sigma east velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts |
+| 92 | f32 | velocitySigmaNorth | [m/s] 1-sigma north velocity uncertainty, square root of the horizontal Kalman filter covariance diagonal; 0 until the filter starts |
+| 96 | f32 | gnssInnovationEast | [m] latest GNSS east position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now) |
+| 100 | f32 | gnssInnovationNorth | [m] latest GNSS north position innovation: measurement (lever arm corrected with the attitude of its time of validity) minus the filter prediction at that same time of validity (the fix is applied there, then replayed to now) |
+| 104 | f32 | altimeterInnovation | [m] latest altimeter residual: tilt-compensated measured altitude minus estimated altitude before the correction. The vertical estimator is a fixed-gain complementary filter, so there is no vertical sigma |
+| 108 | f32 | gnssUpdateAge | [s] time since the last accepted GNSS fix; -1 if none accepted yet. No measurement gating exists, so there is no rejected count |
+| 112 | f32 | altimeterUpdateAge | [s] time since the last accepted altimeter reading; -1 if none accepted yet. No measurement gating exists, so there is no rejected count |
 
 ### 0x120 Guidance and control
 
@@ -140,6 +152,25 @@ Record `feedback_engine` (12 bytes), repeated 3 times, record i at the field off
 | 4 | f32 | pitch | [rad] measured gimbal pitch |
 | 8 | f32 | yaw | [rad] measured gimbal yaw |
 
+### 0x150 Engine status
+
+Power setting command, measured throttle and state of all six engines (three sea-level Raptors, then three Raptor Vacuums). A separate packet so the guidance and actuator feedback layouts (sea-level engines only) are unchanged.
+
+| Offset | Type | Field | Notes |
+|---:|---|---|---|
+| 0 | engine_power[6] | engines | per engine; index 0 to 2 sea-level, 3 to 5 RVac |
+
+Record `engine_power` (12 bytes), repeated 6 times, record i at the field offset plus 12 i. Per-engine power setting and measured state in the engine status packet (all six engines: sea-level 0 to 2, RVac 3 to 5).
+
+| Offset | Type | Field | Notes |
+|---:|---|---|---|
+| 0 | u8 | on | engine commanded on: 0 or 1 |
+| 1 | u8 | state | engine controller state as reported by the engine (inhibited: commanded on but refused, e.g. RVac flow separation at high ambient pressure): 0 Off, 1 Starting, 2 Running, 3 Inhibited |
+| 2 | u8 | valid | engine feedback reading is valid: 0 or 1 |
+| 3 | u8[1] | pad | 0 |
+| 4 | f32 | command | [fraction] power setting command, fraction of rated flow (0 when commanded off) |
+| 8 | f32 | throttle | [fraction] actual throttle, measured by the engine feedback sensor (not the command) |
+
 ### 0x140 GNSS
 
 The latest receiver solution as the flight computer received it.
@@ -158,6 +189,50 @@ The latest receiver solution as the flight computer received it.
 | 48 | f32 | horizontalSigma | [m] receiver-reported 1 sigma |
 | 52 | f32 | verticalSigma | [m] receiver-reported 1 sigma |
 
+### 0x160 Catch status
+
+Catch state computed by the flight software (phase, abort reason, go/no-go flags and the errors against the seat). The Ship translates to a point over the seat early and descends vertically between the open arms, so the phases Approach, Hold and Final are height bands of one vertical descent (Hold = the arms are expected to be closing). The arm state is NOT downlinked to the flight computer: armsExpected is what the sequence expects (time since the arms-closing height), not a measurement. Along and lateral are the horizontal offset from the seat point in the tower approach frame: alongRemaining positive = short of the seat point, lateral positive toward the +b side (b = approach direction rotated +90 deg). The go/no-go flags are the flight software gates (about 2x the physical catch window, tapering with height above the seat), not the window itself. The u8 block is 4 bytes so every f32 is 4-byte aligned.
+
+| Offset | Type | Field | Notes |
+|---:|---|---|---|
+| 0 | u8 | phase | catch phase: 0 Inactive, 1 Staging, 2 Approach, 3 Hold, 4 Final, 5 Caught, 6 Abort |
+| 1 | u8 | abortReason | reason for the last abort; 0 if none: 0 None, 1 RtkLost, 2 Corridor, 3 Window, 4 Timeout |
+| 2 | u8 | armsExpected | arm state expected per the sequence (time since the arms-closing height), not measured: 0 Open, 1 Closing, 2 Closed |
+| 3 | u8 | flags | go/no-go flags: bit 0 all conditions go (`go`), bit 1 horizontal error to the seat within the funnel for this height (`positionOk`), bit 2 horizontal speed and sink rate within their gates for this height (`speedOk`), bit 3 tilt and heading within their gates for this height (`tiltOk`), bit 4 RTK fixed solution available (`rtkOk`), bit 5 lateral error inside the funnel for this height (`corridorOk`), bit 6 catch aborted, flying the pad fallback (`aborted`) |
+| 4 | f32 | alongRemaining | [m] horizontal offset along the approach axis from the seat point; positive = short of the seat (the Ship descends over the seat, so this is near zero in a good run) |
+| 8 | f32 | lateralError | [m] lateral offset from the seat point; positive = +b side |
+| 12 | f32 | pinHeightAboveSeat | [m] catch pin height above the seated pin height |
+| 16 | f32 | alongSpeed | [m/s] estimated horizontal velocity along the approach axis |
+| 20 | f32 | lateralSpeed | [m/s] estimated lateral velocity |
+| 24 | f32 | sinkRate | [m/s] estimated sink rate, positive down |
+| 28 | f32 | tilt | [rad] estimated tilt from vertical |
+| 32 | f32 | lateralLimit | [m] funnel: horizontal error allowed at the current height above the seat (about 1.2 m at the seat, widening with height) |
+| 36 | f32 | timeToSeat | [s] estimated time to the seat from the vertical motion (constant deceleration from the sink rate to the contact sink rate); -1 if not descending |
+
+### 0x161 Catch config
+
+Catch geometry and window limits the flight software is configured with (mission data). Target-frame local ENU, metres and radians. The u8 is followed by 3 pad bytes so every f32 is 4-byte aligned.
+
+| Offset | Type | Field | Notes |
+|---:|---|---|---|
+| 0 | u8 | landingMode | landing mode (`fsw::LandingMode`): 0 Pad, 1 Catch |
+| 1 | u8[3] | pad | 0 |
+| 4 | f32[3] | seatPoint | [m] east, north, seated base altitude; target frame |
+| 16 | f32[2] | approachDir | unit vector east, north, toward the tower from the approach side (defines along and lateral) |
+| 24 | f32 | stagingDistance | [m] distance of the translation target before the seat point along the approach axis; 0 = the Ship translates to a point straight over the seat and descends vertically |
+| 28 | f32[2] | towerPosition | [m] tower centerline east, north |
+| 36 | f32 | mastHalfWidth | [m] tower mast half width (square) |
+| 40 | f32 | mastHeight | [m] tower mast height |
+| 44 | f32 | hingeHalfSpacing | [m] arm hinge lateral offset from the approach axis |
+| 48 | f32 | hingeSetback | [m] arm hinge distance from the tower center along the approach axis |
+| 52 | f32 | armLength | [m] arm length from the hinge |
+| 56 | f32 | armOpenAngle | [rad] open arm direction, outward from the approach axis |
+| 60 | f32 | armClosedAngle | [rad] closed arm direction, inward from the approach axis |
+| 64 | f32 | windowLateral | [m] catch window lateral limit |
+| 68 | f32 | windowAlong | [m] catch window along limit |
+| 72 | f32 | windowSink | [m/s] catch window sink rate limit |
+| 76 | f32 | windowTilt | [rad] catch window tilt limit |
+
 
 ## Vehicle constants the console needs
 
@@ -165,8 +240,12 @@ Not downlinked (they are configuration): engine i sits at azimuth `engineAzimuth
 
 | Constant | Value | Unit | Meaning | Source |
 |---|---:|---|---|---|
-| `engineCount` | 3 |  | Engines in the hop configuration (three sea-level Raptor 3). | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
+| `engineCount` | 3 |  | Sea-level Raptor 3 engines (gimbaled, inner ring); engine indices 0 to 2. The gimbal records and the guidance engine records cover only these. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
 | `engineAzimuthFirstDeg` | 90 | deg | Azimuth of engine 0 from body +x toward +y; engine i sits at this plus engineAzimuthStepDeg * i. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
 | `engineAzimuthStepDeg` | 120 | deg | Azimuth step between engines. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
 | `engineRadius` | 1.55 | m | Engine distance from the vehicle axis. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
+| `rvacCount` | 3 |  | Raptor Vacuum engines (fixed, no gimbal, outer ring); engine indices engineCount to engineCount + rvacCount - 1 in the engine status packet. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
+| `rvacAzimuthFirstDeg` | 150 | deg | Azimuth of the first RVac from body +x toward +y; RVac j sits at this plus rvacAzimuthStepDeg * j (60 deg off the sea-level engines). | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
+| `rvacAzimuthStepDeg` | 120 | deg | Azimuth step between RVacs. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
+| `rvacRadius` | 3.6 | m | RVac distance from the vehicle axis. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |
 | `gimbalLimitDeg` | 15 | deg | Gimbal deflection limit. | sim_vehicle/include/sim/vehicle/HopperParams.hpp (estimate) |

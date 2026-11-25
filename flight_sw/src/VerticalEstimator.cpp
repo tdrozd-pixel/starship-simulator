@@ -10,6 +10,7 @@ void VerticalEstimator::predict(double specificForceUp, double dt) {
 
 void VerticalEstimator::correct(double measuredAltitude, double dt) {
     const double residual = measuredAltitude - altitude_;
+    altitudeInnovation_ = residual;
     altitude_ += config_.altitudeGain * residual * dt;
     velocity_ += config_.velocityGain * residual * dt;
 }

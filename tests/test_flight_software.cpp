@@ -15,6 +15,7 @@ public:
     fsw::GnssSample readGnss() override { return gnss; }
     void commandActuators(const fsw::ActuatorCommand& value) override { command = value; }
     fsw::GimbalFeedbackSample readGimbalFeedback() override { return gimbal; }
+    fsw::EngineFeedbackSample readEngineFeedback() override { return engineFeedback; }
     void publishTelemetry(const fsw::Telemetry& value) override { telemetry = value; }
     void downlink(const uint8_t* packet, std::size_t length) override {
         packets.emplace_back(packet, packet + length);
@@ -27,6 +28,7 @@ public:
     fsw::ActuatorCommand command;
     fsw::Telemetry telemetry;
     fsw::GimbalFeedbackSample gimbal;
+    fsw::EngineFeedbackSample engineFeedback;
     std::vector<std::vector<uint8_t>> packets;
 };
 
@@ -153,12 +155,18 @@ TEST_CASE(hop_flight_computer_commands_tvc_against_measured_rotation) {
         computer.tick();
     }
 
-    for (const fsw::EngineCommand& e : hal.command.engines) {
-        CHECK(e.on);
-        CHECK(e.gimbalPitch > 0.0);
-        CHECK(e.gimbalYaw < 0.0);
-        CHECK(std::abs(e.gimbalPitch) <= config.gimbalLimit);
-        CHECK(std::abs(e.gimbalYaw) <= config.gimbalLimit);
+    for (int i = 0; i < fsw::kSeaLevelEngineCount; ++i) {
+        CHECK(hal.command.engines[i].on);
+    }
+    for (int i = fsw::kFirstRvac; i < fsw::kEngineCount; ++i) {  // RVacs stay off for the hop
+        CHECK(!hal.command.engines[i].on);
+        CHECK(hal.command.engines[i].throttle == 0.0);
+    }
+    for (const fsw::GimbalCommand& g : hal.command.gimbals) {
+        CHECK(g.pitch > 0.0);
+        CHECK(g.yaw < 0.0);
+        CHECK(std::abs(g.pitch) <= config.gimbalLimit);
+        CHECK(std::abs(g.yaw) <= config.gimbalLimit);
     }
 }
 
@@ -178,10 +186,10 @@ TEST_CASE(hop_flight_computer_counters_roll_rate_with_differential_gimbal) {
     // Net roll torque from the commanded tangential tilts must oppose the rate:
     // engine i at azimuth a, lateral thrust (sin yaw, -sin pitch): torque_z ~ r x lateral.
     double torqueZ = 0.0;
-    for (int i = 0; i < fsw::kEngineCount; ++i) {
-        const double a = config.engineAzimuth0 + 2.0 * 3.14159265358979323846 * i / fsw::kEngineCount;
-        const double lx = std::sin(hal.command.engines[i].gimbalYaw);
-        const double ly = -std::sin(hal.command.engines[i].gimbalPitch);
+    for (int i = 0; i < fsw::kSeaLevelEngineCount; ++i) {
+        const double a = config.engineAzimuth0 + 2.0 * 3.14159265358979323846 * i / fsw::kSeaLevelEngineCount;
+        const double lx = std::sin(hal.command.gimbals[i].yaw);
+        const double ly = -std::sin(hal.command.gimbals[i].pitch);
         torqueZ += std::cos(a) * ly - std::sin(a) * lx;
     }
     CHECK(torqueZ < 0.0);
@@ -196,13 +204,16 @@ TEST_CASE(hop_flight_computer_downlinks_all_periodic_packets_on_cycle_zero) {
     hal.time = 0.01;
     hal.imu.stamp = hal.time;
     computer.tick();
-    // No GNSS solution yet: status, config, navigation, guidance, actuators.
+    // No GNSS solution yet: status, config, navigation, guidance, actuators, engine status,
+    // catch status, catch config (the catch packets are also sent in Pad mode).
     std::vector<unsigned> apids;
     for (const auto& p : hal.packets) {
         apids.push_back((static_cast<unsigned>(p[0] & 0x07) << 8) | p[1]);
     }
-    CHECK(apids.size() == 5);
+    CHECK(apids.size() == 8);
     CHECK(apids[0] == 0x100 && apids[1] == 0x101 && apids[2] == 0x110 && apids[3] == 0x120 && apids[4] == 0x130);
+    CHECK(apids[5] == 0x150);
+    CHECK(apids[6] == 0x160 && apids[7] == 0x161);
 
     hal.packets.clear();
     hal.time = 0.02;

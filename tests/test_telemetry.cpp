@@ -43,6 +43,7 @@ struct Run {
     double touchdownEast = 0.0;
     double touchdownNorth = 0.0;
     double maxAltitude = 0.0;
+    double endTime = 0.0;
 };
 
 Run runHop(HopScenarioOptions options, bool withSink) {
@@ -66,6 +67,7 @@ Run runHop(HopScenarioOptions options, bool withSink) {
     run.touchdownEast = td.east;
     run.touchdownNorth = td.north;
     run.maxAltitude = scenario.vehicle->maxAltitude();
+    run.endTime = scenario.sim->time();
     return run;
 }
 
@@ -76,7 +78,10 @@ std::size_t expectedLength(uint16_t apid) {
         case fsw::apid::kNavigation: return ccsds::kHeaderSize + fsw::kNavigationLength;
         case fsw::apid::kGuidanceControl: return ccsds::kHeaderSize + fsw::kGuidanceControlLength;
         case fsw::apid::kActuatorFeedback: return ccsds::kHeaderSize + fsw::kActuatorFeedbackLength;
+        case fsw::apid::kEngineStatus: return ccsds::kHeaderSize + fsw::kEngineStatusLength;
         case fsw::apid::kGnss: return ccsds::kHeaderSize + fsw::kGnssLength;
+        case fsw::apid::kCatchStatus: return ccsds::kHeaderSize + fsw::kCatchStatusLength;
+        case fsw::apid::kCatchConfig: return ccsds::kHeaderSize + fsw::kCatchConfigLength;
         default: return 0;
     }
 }
@@ -136,6 +141,7 @@ public:
     fsw::AltimeterSample readAltimeter() override { return {}; }
     fsw::GnssSample readGnss() override { return {}; }
     fsw::GimbalFeedbackSample readGimbalFeedback() override { return {}; }
+    fsw::EngineFeedbackSample readEngineFeedback() override { return {}; }
     void commandActuators(const fsw::ActuatorCommand&) override {}
     void publishTelemetry(const fsw::Telemetry&) override {}
     void downlink(const uint8_t* packet, std::size_t length) override {
@@ -165,8 +171,10 @@ TEST_CASE(gnc_telemetry_sequence_count_wraps_at_16383) {
     CHECK(status[16384] == 0);
 }
 
-TEST_CASE(telemetry_stream_decodes_and_is_consistent) {
-    HopScenarioOptions options;
+namespace {
+
+// Decodes and cross-checks a whole flight's downlink; returns the highest flight mode seen.
+int checkTelemetryStream(const HopScenarioOptions& options) {
     const Run run = runHop(options, true);
     CHECK(run.packets.size() > 1000);
     CHECK(run.overflowed == 0);
@@ -220,8 +228,7 @@ TEST_CASE(telemetry_stream_decodes_and_is_consistent) {
     }
     CHECK(packetsOk);
     CHECK(satsOk);
-    CHECK(counts.size() == 6);
-    CHECK(maxMode == 6);
+    CHECK(counts.size() == 9);
     CHECK(minLatency >= 0.015);
     CHECK(maxLatency <= 0.035);
     uint64_t totalGaps = 0;
@@ -230,6 +237,26 @@ TEST_CASE(telemetry_stream_decodes_and_is_consistent) {
     }
     // Every gap is a lost packet (losses after the last delivered packet of an APID go unseen).
     CHECK(totalGaps <= run.lost);
+    return maxMode;
+}
+
+}  // namespace
+
+// The pad flight ends in Landed (mode 6).
+TEST_CASE(telemetry_stream_decodes_and_is_consistent) {
+    HopScenarioOptions options;
+    options.landing = fsw::LandingMode::Pad;
+    CHECK(checkTelemetryStream(options) == 6);
+}
+
+// The default (catch) flight carries the catch modes 7 to 10 on the wire; whether it ends
+// caught is flight performance and is not asserted here.
+TEST_CASE(telemetry_stream_decodes_in_catch_mode) {
+    HopScenarioOptions options;
+    options.weather.gusts.clear();
+    const int maxMode = checkTelemetryStream(options);
+    CHECK(maxMode >= 7);
+    CHECK(maxMode <= 10);
 }
 
 namespace {
@@ -247,12 +274,15 @@ uint64_t fnv1a(uint64_t hash, const uint8_t* data, std::size_t length) {
 
 // Pins the downlinked wire bytes of the first 0.9 s of the standard hop (seed 1, default
 // options): the vehicle is on the pad, so the bytes depend on the packet layouts, the sensor
-// models and navigation but not on guidance or control tuning. The layouts are generated from
+// models and navigation but not on guidance or control tuning (apart from the catch funnel limit below). The layouts are generated from
 // telemetry/dictionary.json; this proves the generator and refactors never change a byte on
-// the wire. The cut-off is ground receive time, so a change to the placeholder link latency also moves it. Update the constants only when the dictionary, those models or the link change on purpose.
+// the wire. The default landing mode is Catch: the stream includes the catch_status (it carries the
+// approach funnel limit, so it depends on CatchConfig funnelBase/funnelSlope) and catch_config packets.
+// Re-recorded (hash was 0x3E50B2D4D7711264, count unchanged at 179) when the GNSS fusion became delayed-measurement: the on-pad navigation values and innovations changed.
+// The cut-off is ground receive time, so a change to the placeholder link latency also moves it. Update the constants only when the dictionary, those models or the link change on purpose.
 TEST_CASE(telemetry_stream_matches_golden) {
-    constexpr uint64_t kGoldenHash = 0x848F61A5F1E532D8ULL;
-    constexpr std::size_t kGoldenCount = 151;
+    constexpr uint64_t kGoldenHash = 0x48A28B892886F245ULL;
+    constexpr std::size_t kGoldenCount = 179;
     HopScenarioOptions options;
     const Run run = runHop(options, true);
     uint64_t hash = 0xCBF29CE484222325ULL;  // FNV offset basis
@@ -274,12 +304,13 @@ TEST_CASE(telemetry_stream_matches_golden) {
 TEST_CASE(generated_user_data_lengths_match_the_documented_lengths) {
     namespace tm = fsw::telemetry;
     static_assert(tm::kFswStatusApid == 0x100 && tm::kMissionConfigApid == 0x101 && tm::kNavigationApid == 0x110);
-    static_assert(tm::kGuidanceControlApid == 0x120 && tm::kActuatorFeedbackApid == 0x130 && tm::kGnssApid == 0x140);
-    const std::size_t generated[6] = {tm::kFswStatusUserDataLength,       tm::kMissionConfigUserDataLength,
+    static_assert(tm::kGuidanceControlApid == 0x120 && tm::kActuatorFeedbackApid == 0x130 && tm::kGnssApid == 0x140 &&
+                  tm::kEngineStatusApid == 0x150);
+    const std::size_t generated[7] = {tm::kFswStatusUserDataLength,       tm::kMissionConfigUserDataLength,
                                       tm::kNavigationUserDataLength,      tm::kGuidanceControlUserDataLength,
-                                      tm::kActuatorFeedbackUserDataLength, tm::kGnssUserDataLength};
-    const std::size_t documented[6] = {20, 36, 80, 84, 36, 56};
-    for (int i = 0; i < 6; ++i) {
+                                      tm::kActuatorFeedbackUserDataLength, tm::kGnssUserDataLength, tm::kEngineStatusUserDataLength};
+    const std::size_t documented[7] = {20, 36, 116, 84, 36, 56, 72};
+    for (int i = 0; i < 7; ++i) {
         CHECK(generated[i] == documented[i]);
     }
 }
@@ -329,6 +360,7 @@ TEST_CASE(telemetry_is_deterministic_for_a_seed) {
 TEST_CASE(downlink_does_not_change_the_flight) {
     HopScenarioOptions options;
     options.seed = 3;
+    options.landing = fsw::LandingMode::Pad;  // touchdown time and miss are the pad flight's outcome
     const Run with = runHop(options, true);
     const Run without = runHop(options, false);
     CHECK(with.touchdownTime == without.touchdownTime);
@@ -336,6 +368,18 @@ TEST_CASE(downlink_does_not_change_the_flight) {
     CHECK(with.touchdownNorth == without.touchdownNorth);
     CHECK(with.maxAltitude == without.maxAltitude);
     CHECK(with.touchdownTime > 0.0);
+}
+
+// Same for the catch flight: the downlink must not change when the sim halts or how high it flies.
+TEST_CASE(downlink_does_not_change_the_catch_flight) {
+    HopScenarioOptions options;
+    options.seed = 3;
+    options.weather.gusts.clear();
+    const Run with = runHop(options, true);
+    const Run without = runHop(options, false);
+    CHECK(with.endTime == without.endTime);
+    CHECK(with.maxAltitude == without.maxAltitude);
+    CHECK(with.endTime > 0.0);
 }
 
 TEST_CASE(ideal_gimbal_feedback_equals_truth) {
@@ -349,7 +393,7 @@ TEST_CASE(ideal_gimbal_feedback_equals_truth) {
         scenario.sim->step();
         const auto& msg = channel.latest();
         const auto& truth = scenario.vehicle->state().gimbal;
-        for (int i = 0; i < sim::vehicle::kEngineCount; ++i) {
+        for (int i = 0; i < sim::vehicle::kSeaLevelEngineCount; ++i) {
             worst = std::max({worst, std::abs(msg.data.pitch[i] - truth(0, i)), std::abs(msg.data.yaw[i] - truth(1, i))});
             largest = std::max(largest, std::abs(truth(0, i)) + std::abs(truth(1, i)));
         }

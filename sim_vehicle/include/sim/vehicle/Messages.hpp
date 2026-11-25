@@ -8,7 +8,8 @@
 // Bus message types and channel names shared by the vehicle models.
 namespace sim::vehicle {
 
-static_assert(kEngineCount == fsw::kEngineCount, "flight software and vehicle disagree on engine count");
+static_assert(kEngineCount == fsw::kEngineCount && kSeaLevelEngineCount == fsw::kSeaLevelEngineCount,
+              "flight software and vehicle disagree on engine count");
 
 struct ImuMsg {
     Eigen::Vector3d specificForce = Eigen::Vector3d::Zero();  // body [m/s^2]
@@ -35,20 +36,32 @@ struct GnssMsg {
 };
 
 struct GimbalFeedbackMsg {
+    bool valid[kSeaLevelEngineCount] = {};
+    double pitch[kSeaLevelEngineCount] = {};  // measured, about body x [rad]
+    double yaw[kSeaLevelEngineCount] = {};    // measured, about body y [rad]
+};
+
+// Measured engine throttle and controller state, all six engines.
+struct EngineFeedbackMsg {
     bool valid[kEngineCount] = {};
-    double pitch[kEngineCount] = {};  // measured, about body x [rad]
-    double yaw[kEngineCount] = {};    // measured, about body y [rad]
+    double throttle[kEngineCount] = {};  // measured actual [fraction of rated flow]
+    fsw::EngineState state[kEngineCount] = {};
 };
 
 struct EngineCommandMsg {
     bool on = false;
-    double throttle = 0.0;     // fraction of rated flow
-    double gimbalPitch = 0.0;  // [rad]
-    double gimbalYaw = 0.0;    // [rad]
+    double throttle = 0.0;  // fraction of rated flow
 };
 
+struct GimbalCommandMsg {
+    double pitch = 0.0;  // [rad]
+    double yaw = 0.0;    // [rad]
+};
+
+// Six engines (0..2 sea level, 3..5 RVac); gimbals only for the three sea-level engines.
 struct ActuatorCommandMsg {
     EngineCommandMsg engines[kEngineCount];
+    GimbalCommandMsg gimbals[kSeaLevelEngineCount];
 };
 
 using FswTelemetryMsg = fsw::Telemetry;
@@ -58,6 +71,7 @@ inline constexpr const char* kImu = "sensors/imu";
 inline constexpr const char* kAltimeter = "sensors/radar_altimeter";
 inline constexpr const char* kGnss = "sensors/gnss";
 inline constexpr const char* kGimbalFeedback = "sensors/gimbal_feedback";
+inline constexpr const char* kEngineFeedback = "sensors/engine_feedback";
 inline constexpr const char* kActuatorCmd = "fsw/actuator_cmd";
 inline constexpr const char* kFswTelemetry = "fsw/telemetry";
 }  // namespace channels

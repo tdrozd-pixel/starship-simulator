@@ -1,11 +1,16 @@
 #include "sim/vehicle/HopScenario.hpp"
 
+#include <stdexcept>
+
 #include "sim/core/Random.hpp"
 #include "sim/vehicle/TelemetryLogger.hpp"
 
 namespace sim::vehicle {
 
 HopScenario buildHopScenario(const HopScenarioOptions& options) {
+    if (const char* problem = options.tower.validate()) {
+        throw std::invalid_argument(problem);
+    }
     HopScenario scenario;
     scenario.downlinkQueue = std::make_unique<DownlinkQueue>();
     scenario.sim = std::make_unique<Simulation>(SimConfig{1000.0, options.seed});
@@ -29,10 +34,12 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     altSpec.ideal = altSpec.ideal || options.idealSensors;
     GimbalFeedbackSpec gimbalSpec = options.gimbalFeedback;
     gimbalSpec.ideal = gimbalSpec.ideal || options.idealSensors;
+    EngineFeedbackSpec engineSpec = options.engineFeedback;
+    engineSpec.ideal = engineSpec.ideal || options.idealSensors;
     GnssSpec gnssSpec = options.gnss;
     gnssSpec.ideal = gnssSpec.ideal || options.idealSensors;
 
-    // Order matters: sensors, then flight software, then the downlink, then logging.
+    // Order matters: sensors, then flight software, then the tower, then the downlink, then logging.
     sim.scheduler().emplace<ImuModel>("imu", options.imuRateHz, vehicle, imuSpec,
                                       deriveSeed(options.seed, "imu"));
     sim.scheduler().emplace<RadarAltimeterModel>("radar_altimeter", options.altimeterRateHz, vehicle, altSpec,
@@ -44,6 +51,8 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
                                        deriveSeed(options.seed, "gnss_constellation"));
     sim.scheduler().emplace<GimbalFeedbackModel>("gimbal_feedback", options.gimbalFeedbackRateHz, vehicle, gimbalSpec,
                                                  deriveSeed(options.seed, "gimbal_feedback"));
+    sim.scheduler().emplace<EngineFeedbackModel>("engine_feedback", options.engineFeedbackRateHz, vehicle, engineSpec,
+                                                 deriveSeed(options.seed, "engine_feedback"));
 
     // What the flight software is told about the vehicle and the mission (loaded
     // before flight, like a real mass properties table and target coordinates).
@@ -55,6 +64,8 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     hop.vacuumThrust = v.vacuumThrust();
     hop.nozzleExitArea = v.nozzleExitArea();
     hop.vacuumIsp = v.vacuumIsp;
+    hop.rvacVacuumThrust = v.rvacVacuumThrust;
+    hop.rvacVacuumIsp = v.rvacVacuumIsp;
     hop.minThrottle = v.minThrottle;
     hop.engineLeverArm = mp.cgHeight - v.gimbalHeight;
     hop.engineClusterRadius = v.engineClusterRadius;
@@ -69,8 +80,36 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     }
     // The IMU model sits at the CG (TODO(phase 6, item 30): its own mounting point).
     hop.imuPosition[2] = mp.cgHeight;
+    // Catch mission data derived from the tower and the Ship pins (target frame = sim ENU).
+    const TowerParams& tw = options.tower;
+    const TowerParams::SeatPoint seat = tw.seatPointEnu(v);
+    hop.landingMode = options.landing;
+    fsw::CatchConfig& cc = hop.catchConfig;
+    cc.seat[0] = seat.east;
+    cc.seat[1] = seat.north;
+    cc.seat[2] = seat.baseAltitude;
+    cc.approachDir[0] = -tw.approachSide[0];
+    cc.approachDir[1] = -tw.approachSide[1];
+    cc.pinHeight = v.catchPinHeight;
+    cc.armTriggerHeight = tw.closeTriggerHeight;
+    cc.windowLateral = tw.windowLateral;
+    cc.windowAlong = tw.windowAlong;
+    cc.windowSink = tw.windowSink;
+    cc.windowHorizontalSpeed = tw.windowHorizontalSpeed;
+    cc.windowTilt = tw.windowTilt;
+    cc.windowHeading = tw.windowHeading;
+    cc.towerPosition[0] = tw.position[0];
+    cc.towerPosition[1] = tw.position[1];
+    cc.mastHalfWidth = tw.mastHalfWidth;
+    cc.mastHeight = tw.mastHeight;
+    cc.hingeHalfSpacing = tw.hingeHalfSpacing;
+    cc.hingeSetback = tw.hingeSetback;
+    cc.armLength = tw.armLength;
+    cc.armOpenAngle = tw.armOpenAngle;
+    cc.armClosedAngle = tw.phi(tw.psiClosed(v.catchPinOffset));
     scenario.fsw = &sim.scheduler().emplace<FlightSoftwareModel>("flight_software", hop);
     scenario.fsw->setDownlinkQueue(scenario.downlinkQueue.get());
+    scenario.tower = &sim.scheduler().emplace<TowerModel>("tower", 1000.0, vehicle, options.tower);
     if (options.telemetrySink != nullptr) {
         scenario.downlink = &sim.scheduler().emplace<DownlinkModel>(
             "downlink", options.downlinkRateHz, *scenario.downlinkQueue, *options.telemetrySink, options.downlink,
@@ -84,6 +123,7 @@ HopScenario buildHopScenario(const HopScenarioOptions& options) {
     if (options.snapshotSink != nullptr) {
         scenario.snapshotPublisher = &sim.scheduler().emplace<TruthSnapshotPublisher>(
             "truth_snapshot", options.snapshotRateHz, vehicle, *options.snapshotSink);
+        scenario.snapshotPublisher->setTower(scenario.tower);
     }
 
     sim.initialize();

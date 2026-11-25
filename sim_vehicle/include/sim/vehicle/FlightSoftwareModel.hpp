@@ -28,6 +28,7 @@ public:
     fsw::GnssSample readGnss() override;
     void commandActuators(const fsw::ActuatorCommand& command) override;
     fsw::GimbalFeedbackSample readGimbalFeedback() override;
+    fsw::EngineFeedbackSample readEngineFeedback() override;
     void publishTelemetry(const fsw::Telemetry& telemetry) override;
     void downlink(const uint8_t* packet, std::size_t length) override;
 
@@ -37,6 +38,7 @@ private:
     const Channel<AltimeterMsg>* altimeter_ = nullptr;
     const Channel<GnssMsg>* gnss_ = nullptr;
     const Channel<GimbalFeedbackMsg>* gimbalFeedback_ = nullptr;
+    const Channel<EngineFeedbackMsg>* engineFeedback_ = nullptr;
     DownlinkQueue* downlinkQueue_ = nullptr;
     Channel<ActuatorCommandMsg>* commands_ = nullptr;
     Channel<FswTelemetryMsg>* telemetry_ = nullptr;

@@ -7,6 +7,7 @@ add_library(flight_sw STATIC
     src/Geodesy.cpp
     src/Ccsds.cpp
     src/GncTelemetry.cpp
+    src/EngineAllocator.cpp
     src/HopFlightComputer.cpp)
 
 target_include_directories(flight_sw PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -25,6 +25,7 @@ struct SnapshotRun {
 void runHopUnpaced(SnapshotRun& run, uint64_t seed, bool withSink) {
     sim::vehicle::HopScenarioOptions options;
     options.seed = seed;
+    options.landing = fsw::LandingMode::Pad;  // these tests assume the pad touchdown flight; catch default is covered elsewhere
     if (withSink) {
         options.snapshotSink = &run.sink;
     }
@@ -51,6 +52,19 @@ TEST_CASE(publisher_runs_at_100hz) {
         if (i > 0) {
             CHECK(snaps[i].simTime > snaps[i - 1].simTime);
         }
+    }
+}
+
+TEST_CASE(publisher_tower_fields_are_valid) {
+    SnapshotRun run;
+    runHopUnpaced(run, 1, true);
+    CHECK(!run.sink.snapshots.empty());
+    for (const TruthSnapshot& s : run.sink.snapshots) {
+        CHECK(s.towerState <= 4u);
+        CHECK(s.catchResult <= 3u);
+        CHECK(std::isfinite(s.armAngle[0]) && std::isfinite(s.armAngle[1]));
+        // Caught and crashed are mutually exclusive.
+        CHECK(!((s.flags & sim::vehicle::kSnapCaught) != 0 && (s.flags & sim::vehicle::kSnapCrashed) != 0));
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include "sim/core/Integrator.hpp"
@@ -86,11 +87,23 @@ HopperState HopperDynamics::stateOnPad(const HopperParams& params, const Eigen::
 
 HopperDynamics::HopperDynamics(const HopperParams& params, const HopperState& initial)
     : params_(params), massProperties_(hopperMassProperties(params)), x_(initial) {
+    // The RVacs are fixed; their thrust acts in the same plane as the gimbal points (estimate).
     const double gimbalZ = params_.gimbalHeight - massProperties_.cgHeight;
     for (int i = 0; i < kEngineCount; ++i) {
-        const double azimuth = params_.engineAzimuth0 + 2.0 * std::numbers::pi * i / kEngineCount;
-        enginePositions_.col(i) = Eigen::Vector3d(params_.engineClusterRadius * std::cos(azimuth),
-                                                  params_.engineClusterRadius * std::sin(azimuth), gimbalZ);
+        const bool sea = i < kSeaLevelEngineCount;
+        const double azimuth = sea ? params_.engineAzimuth0 + 2.0 * std::numbers::pi * i / kSeaLevelEngineCount
+                                   : params_.rvacAzimuth0 +
+                                         2.0 * std::numbers::pi * (i - kFirstRvac) / kRvacCount;
+        const double radius = sea ? params_.engineClusterRadius : params_.rvacClusterRadius;
+        enginePositions_.col(i) = Eigen::Vector3d(radius * std::cos(azimuth), radius * std::sin(azimuth), gimbalZ);
+        ratedVacuumThrust_[i] = sea ? params_.vacuumThrust() : params_.rvacVacuumThrust;
+        exitArea_[i] = sea ? params_.nozzleExitArea() : params_.rvacNozzleExitArea();
+        vacuumIsp_[i] = sea ? params_.vacuumIsp : params_.rvacVacuumIsp;
+        minThrottle_[i] = sea ? params_.minThrottle : params_.rvacMinThrottle;
+        ignitionDelay_[i] = sea ? params_.ignitionDelay : params_.rvacIgnitionDelay;
+        throttleTau_[i] = sea ? params_.throttleTimeConstant : params_.rvacThrottleTimeConstant;
+        throttleRate_[i] = sea ? params_.throttleRateLimit : params_.rvacThrottleRateLimit;
+        maxAmbientPressure_[i] = sea ? std::numeric_limits<double>::infinity() : params_.rvacMaxAmbientPressure;
     }
     onGround_ = baseHeightOf(x_) <= 1e-9;
     maxAltitude_ = std::max(0.0, baseHeightOf(x_));
@@ -109,6 +122,16 @@ bool HopperDynamics::engineRunning() const {
         }
     }
     return false;
+}
+
+EngineState HopperDynamics::engineState(int i) const {
+    if (engineRunning_[i]) {
+        return EngineState::Running;
+    }
+    if (ignitionPending_[i]) {
+        return EngineState::Starting;
+    }
+    return engineInhibited_[i] ? EngineState::Inhibited : EngineState::Off;
 }
 
 double HopperDynamics::baseHeightOf(const HopperState& x) const {
@@ -141,8 +164,6 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
     const env::AtmosphereSample air = atmosphere_.at(std::max(0.0, baseHeightOf(x)));
 
     // Thrust: per engine F = throttle * F_vac - p_amb * A_exit, applied at the gimbal point.
-    const double vacuumThrust = params_.vacuumThrust();
-    const double pressureLoss = air.pressure * params_.nozzleExitArea();
     const bool havePropellant = x.propellantMass > 0.0;
     Eigen::Vector3d forceBody = Eigen::Vector3d::Zero();
     Eigen::Vector3d torqueBody = Eigen::Vector3d::Zero();
@@ -152,14 +173,17 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
             continue;
         }
         const double throttle = std::max(0.0, x.throttle[i]);
-        const double thrust = std::max(0.0, throttle * vacuumThrust - pressureLoss);
-        const double pitch = x.gimbal(0, i);
-        const double yaw = x.gimbal(1, i);
-        const Eigen::Vector3d dir(std::cos(pitch) * std::sin(yaw), -std::sin(pitch), std::cos(pitch) * std::cos(yaw));
+        const double thrust = std::max(0.0, throttle * ratedVacuumThrust_[i] - air.pressure * exitArea_[i]);
+        Eigen::Vector3d dir(0.0, 0.0, 1.0);  // RVacs are fixed
+        if (i < kSeaLevelEngineCount) {
+            const double pitch = x.gimbal(0, i);
+            const double yaw = x.gimbal(1, i);
+            dir = Eigen::Vector3d(std::cos(pitch) * std::sin(yaw), -std::sin(pitch), std::cos(pitch) * std::cos(yaw));
+        }
         const Eigen::Vector3d f = thrust * dir;
         forceBody += f;
         torqueBody += enginePositions_.col(i).cross(f);
-        massFlow += throttle * vacuumThrust / (params_.vacuumIsp * env::kStandardGravity);
+        massFlow += throttle * ratedVacuumThrust_[i] / (vacuumIsp_[i] * env::kStandardGravity);
     }
 
     // Aerodynamics (placeholder for item 17): axial drag on the base area plus
@@ -202,15 +226,24 @@ HopperDeriv HopperDynamics::derivatives(const HopperState& x, const ActuatorComm
     // Actuators: first-order response with rate limits, per engine.
     for (int i = 0; i < kEngineCount; ++i) {
         const EngineCommandMsg& c = u.engines[i];
-        const double throttleTarget = engineRunning_[i] ? std::clamp(c.throttle, params_.minThrottle, 1.0) : 0.0;
-        d.throttleDot[i] =
-            firstOrderRate(x.throttle[i], throttleTarget, params_.throttleTimeConstant, params_.throttleRateLimit);
-        const double targets[2] = {std::clamp(c.gimbalPitch, -params_.gimbalLimit, params_.gimbalLimit),
-                                   std::clamp(c.gimbalYaw, -params_.gimbalLimit, params_.gimbalLimit)};
+        const double throttleTarget = engineRunning_[i] ? std::clamp(c.throttle, minThrottle_[i], 1.0) : 0.0;
+        d.throttleDot[i] = firstOrderRate(x.throttle[i], throttleTarget, throttleTau_[i], throttleRate_[i]);
+    }
+    for (int i = 0; i < kSeaLevelEngineCount; ++i) {
+        const GimbalCommandMsg& g = u.gimbals[i];
+        const double targets[2] = {std::clamp(g.pitch, -params_.gimbalLimit, params_.gimbalLimit),
+                                   std::clamp(g.yaw, -params_.gimbalLimit, params_.gimbalLimit)};
         for (int axis = 0; axis < 2; ++axis) {
             d.gimbalDot(axis, i) = firstOrderRate(x.gimbal(axis, i), targets[axis], params_.gimbalTimeConstant,
                                                   params_.gimbalRateLimit);
         }
+    }
+    if (constraint_ != Constraint::Free) {
+        // Held by the arms or crashed: the rigid body does not move.
+        d.positionDot.setZero();
+        d.velocityDot.setZero();
+        d.attitudeDot.setZero();
+        d.angularRateDot.setZero();
     }
     return d;
 }
@@ -229,13 +262,17 @@ void HopperDynamics::prepare(double t) {
     }
 
     // Engine start/stop sequencing (placeholder for the Raptor start sequence, item 9).
+    // Start inhibit: an engine whose ambient pressure limit is exceeded (RVac flow
+    // separation) refuses to run: it stays off (or shuts down) and reports Inhibited.
+    const double ambientPressure = atmosphere_.at(std::max(0.0, baseHeightOf(x_))).pressure;
     for (int i = 0; i < kEngineCount; ++i) {
-        if (!command_.engines[i].on || x_.propellantMass <= 0.0) {
+        engineInhibited_[i] = command_.engines[i].on && ambientPressure > maxAmbientPressure_[i];
+        if (!command_.engines[i].on || x_.propellantMass <= 0.0 || engineInhibited_[i]) {
             engineRunning_[i] = false;
             ignitionPending_[i] = false;
         } else if (!engineRunning_[i] && !ignitionPending_[i]) {
             ignitionPending_[i] = true;
-            ignitionAt_[i] = t + params_.ignitionDelay;
+            ignitionAt_[i] = t + ignitionDelay_[i];
         }
         if (ignitionPending_[i] && t >= ignitionAt_[i]) {
             ignitionPending_[i] = false;
@@ -262,7 +299,15 @@ void HopperDynamics::integrate(double t, double dt) {
         command_ = commandChannel_->latest().data;
     }
 
+    const HopperState before = x_;
     x_ = rk4Step(x_, t, dt, [this](const HopperState& s, double) { return derivatives(s, command_); });
+    if (constraint_ != Constraint::Free) {
+        // Keep the pose bit-exact (the quaternion renormalization would otherwise drift it by an ulp).
+        x_.position = before.position;
+        x_.velocity = before.velocity;
+        x_.attitude = before.attitude;
+        x_.angularRate = before.angularRate;
+    }
     x_.propellantMass = std::max(0.0, x_.propellantMass);
     x_.throttle = x_.throttle.cwiseMax(0.0);
 
@@ -272,6 +317,24 @@ void HopperDynamics::integrate(double t, double dt) {
     if (touchdown_.occurred && !engineRunning() && (t + dt) - touchdown_.time > 2.0) {
         halted_ = true;
     }
+    if (constraint_ != Constraint::Free) {
+        heldTime_ += dt;
+        noEngineTime_ = engineRunning() ? 0.0 : noEngineTime_ + dt;
+        if (noEngineTime_ >= haltEnginesOff_ || heldTime_ >= haltAfterHold_) {
+            halted_ = true;
+        }
+    }
+}
+
+void HopperDynamics::hold(Constraint constraint, const Eigen::Vector3d& cgShift) {
+    if (constraint_ == Constraint::Free && constraint != Constraint::Free) {
+        heldTime_ = 0.0;
+        noEngineTime_ = 0.0;
+    }
+    constraint_ = constraint;
+    x_.position += cgShift;
+    x_.velocity.setZero();
+    x_.angularRate.setZero();
 }
 
 void HopperDynamics::applyGroundContact(double t) {
